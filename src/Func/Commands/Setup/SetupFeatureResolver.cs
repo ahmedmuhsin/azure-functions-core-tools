@@ -59,6 +59,11 @@ internal sealed class SetupFeatureResolver(
         HashSet<string> workerRuntimes = new(StringComparer.OrdinalIgnoreCase);
         bool includeExtensionBundle = false;
 
+        // Fetched on the first stack-shaped feature so a host-only run still
+        // makes no catalog call. Results are cached, so the plan builder's
+        // later lookup costs nothing.
+        SetupStackSnapshot? stacks = null;
+
         foreach (string rawFeature in requestedFeatures)
         {
             string feature = NormalizeFeature(rawFeature);
@@ -93,6 +98,12 @@ internal sealed class SetupFeatureResolver(
                     throw new SetupConfigurationException($"The '{rawFeature}' feature is not supported. Use 'dotnet'.");
 
                 default:
+                    // Fold alternate spellings before anything records the name.
+                    // Everything downstream, including the machine-readable
+                    // setup.started event, has to agree on which one it planned.
+                    stacks ??= await _stackCatalog.GetStacksAsync(options.Source, options.IncludePrerelease, cancellationToken);
+                    feature = stacks.CanonicalStackName(feature);
+
                     if (!AddFeature(features, featureNames, feature))
                     {
                         break;

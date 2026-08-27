@@ -206,22 +206,26 @@ public class SetupStackDiscoveryWiringTests
     }
 
     [Fact]
-    public async Task PlanBuilder_SecondaryAlias_PlansAgainstThePrimaryName()
+    public async Task FeatureResolver_SecondaryAlias_FoldsOntoThePrimaryNameEverywhere()
     {
         // Worker ids are built by concatenation and templates are keyed by the
-        // primary name, so planning "nodejs" verbatim asks for Workers.nodejs
-        // and skips templates entirely.
-        _stackCatalog.GetStacksAsync(Arg.Any<string?>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
-            .Returns(new SetupStackSnapshot(
-                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["node"] = "contoso.workloads.node" },
-                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["node"] = "contoso.workloads.templates.node" },
-                AmbiguousAliases: null,
-                SecondaryAliases: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["nodejs"] = "node" }));
-        SetupDependencyPlanBuilder builder = new(_bundleReader, _stackCatalog);
+        // primary name, so carrying "nodejs" forward asks for Workers.nodejs and
+        // skips templates. WorkerRuntimes has to fold too, since setup.started
+        // is emitted from the plan before any dependency is resolved.
+        WithSecondaryAlias();
 
+        SetupFeaturePlan? featurePlan = await Resolver().ResolveFeaturesAsync(Options(["nodejs"]), CancellationToken.None);
+
+        featurePlan.Should().NotBeNull();
+        featurePlan!.Features.Should().Equal(["node"]);
+        featurePlan.WorkerRuntimes.Should().Equal(["node"]);
+        featurePlan.RuntimeFeatures.Should().ContainSingle()
+            .Which.Should().BeEquivalentTo(new { Name = "node", ProfileRuntime = "node" });
+
+        SetupDependencyPlanBuilder builder = new(_bundleReader, _stackCatalog);
         SetupDependencyPlan plan = await builder.BuildDependencyPlanAsync(
             Options(["nodejs"]),
-            FeaturePlan("nodejs"),
+            featurePlan,
             SetupProfileScope.Unconstrained,
             CancellationToken.None);
 
@@ -235,23 +239,39 @@ public class SetupStackDiscoveryWiringTests
     }
 
     [Fact]
-    public async Task PlanBuilder_BothSpellingsOfOneStack_PlansItOnce()
+    public async Task FeatureResolver_SecondaryAlias_IsCheckedAgainstTheProfileByPrimaryName()
     {
-        // The feature resolver dedupes on the requested spelling, so --features
-        // node,nodejs survives as two entries that fold onto the same runtime.
-        _stackCatalog.GetStacksAsync(Arg.Any<string?>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
-            .Returns(new SetupStackSnapshot(
-                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["node"] = "contoso.workloads.node" },
-                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["node"] = "contoso.workloads.templates.node" },
-                AmbiguousAliases: null,
-                SecondaryAliases: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["nodejs"] = "node" }));
-        SetupDependencyPlanBuilder builder = new(_bundleReader, _stackCatalog);
-        SetupFeaturePlan featurePlan = new(
-            ["node", "nodejs"],
-            [new SetupRuntimeFeature("node", "node", InstallWorker: true), new SetupRuntimeFeature("nodejs", "nodejs", InstallWorker: true)],
-            ["node", "nodejs"],
-            IncludeExtensionBundle: false);
+        // Profiles list canonical runtimes, so an alternate spelling has to fold
+        // before the support check or a legitimate stack reads unsupported.
+        WithSecondaryAlias();
 
+        SetupFeaturePlan? featurePlan = await Resolver().ResolveFeaturesAsync(Options(["nodejs"]), CancellationToken.None);
+        SetupDependencyPlanBuilder builder = new(_bundleReader, _stackCatalog);
+
+        SetupDependencyPlan plan = await builder.BuildDependencyPlanAsync(
+            Options(["nodejs"]),
+            featurePlan!,
+            ProfileSupporting("node"),
+            CancellationToken.None);
+
+        plan.Failures.Should().BeEmpty();
+        plan.Dependencies.Should().Contain(d => d.Kind == SetupDependencyKind.Stack);
+    }
+
+    [Fact]
+    public async Task FeatureResolver_BothSpellingsOfOneStack_CollapseToOne()
+    {
+        // Dedup runs on the folded name, so --features node,nodejs can't reach
+        // the plan as two entries and double every dependency.
+        WithSecondaryAlias();
+
+        SetupFeaturePlan? featurePlan = await Resolver().ResolveFeaturesAsync(Options(["node", "nodejs"]), CancellationToken.None);
+
+        featurePlan.Should().NotBeNull();
+        featurePlan!.Features.Should().Equal(["node"]);
+        featurePlan.RuntimeFeatures.Should().ContainSingle();
+
+        SetupDependencyPlanBuilder builder = new(_bundleReader, _stackCatalog);
         SetupDependencyPlan plan = await builder.BuildDependencyPlanAsync(
             Options(["node", "nodejs"]),
             featurePlan,
@@ -265,27 +285,32 @@ public class SetupStackDiscoveryWiringTests
     }
 
     [Fact]
-    public async Task PlanBuilder_SecondaryAlias_IsCheckedAgainstTheProfileByPrimaryName()
+    public async Task FeatureResolver_HostOnly_NeverAsksTheCatalog()
     {
-        // The profile lists canonical runtimes, so an alternate spelling has to
-        // fold before the support check or a legitimate stack reads unsupported.
-        _stackCatalog.GetStacksAsync(Arg.Any<string?>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+        // Folding must stay lazy; a host-only run has no stack to resolve.
+        WithSecondaryAlias();
+
+        await Resolver().ResolveFeaturesAsync(Options(["host"]), CancellationToken.None);
+
+        await _stackCatalog.DidNotReceive().GetStacksAsync(Arg.Any<string?>(), Arg.Any<bool>(), Arg.Any<CancellationToken>());
+    }
+
+    private void WithSecondaryAlias()
+        => _stackCatalog.GetStacksAsync(Arg.Any<string?>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(new SetupStackSnapshot(
                 new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["node"] = "contoso.workloads.node" },
-                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["node"] = "contoso.workloads.templates.node" },
                 AmbiguousAliases: null,
                 SecondaryAliases: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["nodejs"] = "node" }));
-        SetupDependencyPlanBuilder builder = new(_bundleReader, _stackCatalog);
-        SetupProfileScope scope = ProfileSupporting("node");
 
-        SetupDependencyPlan plan = await builder.BuildDependencyPlanAsync(
-            Options(["nodejs"]),
-            FeaturePlan("nodejs"),
-            scope,
-            CancellationToken.None);
+    private SetupFeatureResolver Resolver()
+    {
+        IWorkloadStore store = Substitute.For<IWorkloadStore>();
+        store.GetWorkloadsAsync(Arg.Any<CancellationToken>()).Returns([]);
+        ICliConfigurationProvider configuration = Substitute.For<ICliConfigurationProvider>();
+        configuration.GetProjectConfiguration(Arg.Any<DirectoryInfo>()).Returns(new ConfigurationBuilder().Build());
 
-        plan.Failures.Should().BeEmpty();
-        plan.Dependencies.Should().Contain(d => d.Kind == SetupDependencyKind.Stack);
+        return new SetupFeatureResolver(new TestInteractionService(), store, configuration, _stackCatalog);
     }
 
     private static SetupProfileScope ProfileSupporting(params string[] runtimes)
@@ -301,7 +326,8 @@ public class SetupStackDiscoveryWiringTests
             runtimes,
             Notes: null));
 
-    private void WithDiscoveredStacks(        Dictionary<string, string> stacks,
+    private void WithDiscoveredStacks(
+        Dictionary<string, string> stacks,
         Dictionary<string, string>? templates = null)
     {
         _stackCatalog.GetStacksAsync(Arg.Any<string?>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
