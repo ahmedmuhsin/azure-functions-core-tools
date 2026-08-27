@@ -174,11 +174,13 @@ internal sealed class SetupStackCatalog(IWorkloadCatalog workloadCatalog) : ISet
 
             foreach (string alias in result.Aliases)
             {
-                if (isStack)
-                {
-                    Claim(claims, ambiguous, alias, result.PackageId);
-                }
-                else if (alias.EndsWith(TemplatesAliasSuffix, StringComparison.OrdinalIgnoreCase))
+                // Ownership spans every kind, matching WorkloadPackageSource. A
+                // stack reusing a worker or host alias has to collide here, or
+                // setup would offer it and install it by exact id, never running
+                // the check that would have refused the same alias by name.
+                Claim(claims, ambiguous, alias, result.PackageId);
+
+                if (!isStack && alias.EndsWith(TemplatesAliasSuffix, StringComparison.OrdinalIgnoreCase))
                 {
                     string stackName = alias[..^TemplatesAliasSuffix.Length];
                     if (stackName.Length > 0)

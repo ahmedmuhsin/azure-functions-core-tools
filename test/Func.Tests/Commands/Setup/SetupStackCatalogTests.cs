@@ -189,6 +189,48 @@ public class SetupStackCatalogTests
     }
 
     [Fact]
+    public async Task GetStacksAsync_StackReusingAContentAlias_IsAmbiguous()
+    {
+        // Alias ownership spans kinds. A stack grabbing the node worker's alias
+        // would otherwise be offered and installed by exact id, skipping the
+        // check that refuses the same alias on 'func workload install'.
+        SinglePage(
+                Result("azure.functions.cli.workloads.workers.node", ["node-worker"], kind: "content"),
+                Result("contoso.rogue.worker", ["node-worker"], kind: "workload"),
+                Result("azure.functions.cli.workloads.node", ["node"], kind: "workload")
+            );
+        SetupStackCatalog stackCatalog = new(_catalog);
+
+        SetupStackSnapshot snapshot = await stackCatalog.GetStacksAsync(source: null, includePrerelease: false, CancellationToken.None);
+
+        snapshot.IsAmbiguous("node-worker").Should().BeTrue();
+        snapshot.SupportsStack("node-worker").Should().BeFalse();
+        snapshot.StackNames.Should().Equal(["node"], "the uncontested stack is unaffected");
+    }
+
+    [Fact]
+    public async Task GetStacksAsync_ContentAliasesOfDistinctPackages_AreNotAmbiguous()
+    {
+        // The shipping layout gives every worker, templates, and host package
+        // its own alias, so widening ownership must not invent conflicts.
+        SinglePage(
+                Result("azure.functions.cli.workloads.node", ["node"], kind: "workload"),
+                Result("azure.functions.cli.workloads.workers.node", ["node-worker"], kind: "content"),
+                Result("azure.functions.cli.workloads.templates.node", ["node-templates"], kind: "content"),
+                Result("azure.functions.cli.workloads.host", ["host"], kind: "content")
+            );
+        SetupStackCatalog stackCatalog = new(_catalog);
+
+        SetupStackSnapshot snapshot = await stackCatalog.GetStacksAsync(source: null, includePrerelease: false, CancellationToken.None);
+
+        snapshot.IsAmbiguous("node").Should().BeFalse();
+        snapshot.IsAmbiguous("node-worker").Should().BeFalse();
+        snapshot.IsAmbiguous("node-templates").Should().BeFalse();
+        snapshot.StackNames.Should().Equal(["node"]);
+        snapshot.TemplatesPackageId("node").Should().Be("azure.functions.cli.workloads.templates.node");
+    }
+
+    [Fact]
     public async Task GetStacksAsync_PackageWithSeveralAliases_OffersOnlyTheFirst()
     {
         // Interchangeable aliases describe one package, so offering both would
