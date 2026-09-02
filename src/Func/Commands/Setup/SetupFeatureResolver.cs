@@ -185,7 +185,11 @@ internal sealed class SetupFeatureResolver(
     private async Task<StackChoicesResult> BuildStackChoicesAsync(SetupCommandOptions options, CancellationToken cancellationToken)
     {
         SetupStackSnapshot snapshot = await _stackCatalog.GetStacksAsync(options.Source, options.IncludePrerelease, cancellationToken);
-        IReadOnlyList<string> stacks = snapshot.StackNames;
+
+        // A stack aliased as one of the CLI's own feature words can't be
+        // offered: picking it comes back through as that word, dispatches to
+        // the built-in arm, and the package the user chose is never planned.
+        IReadOnlyList<string> stacks = [.. snapshot.StackNames.Where(static stack => !IsResolverKeyword(stack))];
         HashSet<string> installedStackPackageIds;
         try
         {

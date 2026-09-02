@@ -380,6 +380,33 @@ public class SetupStackDiscoveryWiringTests
         plan.Dependencies.Should().NotContain(d => d.Kind == SetupDependencyKind.Stack);
     }
 
+    [Fact]
+    public async Task FeatureResolver_PromptSkipsStacksNamedAfterBuiltInFeatures()
+    {
+        // Selecting one would come back as the feature word, dispatch to the
+        // built-in arm, and quietly install host plus bundle instead of the
+        // package that was shown.
+        WithDiscoveredStacks(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["node"] = "azure.functions.cli.workloads.node",
+            ["runtime"] = "contoso.workloads.runtime",
+            ["host"] = "contoso.workloads.host",
+        });
+        IWorkloadStore store = Substitute.For<IWorkloadStore>();
+        store.GetWorkloadsAsync(Arg.Any<CancellationToken>()).Returns([]);
+        ICliConfigurationProvider configuration = Substitute.For<ICliConfigurationProvider>();
+        configuration.GetProjectConfiguration(Arg.Any<DirectoryInfo>()).Returns(new ConfigurationBuilder().Build());
+        SelectAllInteractionService interaction = new();
+        SetupFeatureResolver resolver = new(interaction, store, configuration, _stackCatalog);
+
+        await resolver.ResolveFeaturesAsync(Options([]), CancellationToken.None);
+
+        IEnumerable<string> offered = interaction.MultiSelectionChoices.Should().ContainSingle()
+            .Which.Select(choice => choice.Value);
+        offered.Should().Contain("node");
+        offered.Should().NotContain(["runtime", "host"]);
+    }
+
     private void WithDiscoveredStacks(
         Dictionary<string, string> stacks,
         Dictionary<string, string>? templates = null)
