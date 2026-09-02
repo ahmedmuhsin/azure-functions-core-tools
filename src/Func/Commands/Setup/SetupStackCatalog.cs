@@ -43,7 +43,16 @@ internal sealed record SetupStackSnapshot(
     IReadOnlySet<string>? AmbiguousAliases = null,
     IReadOnlyDictionary<string, string>? SecondaryAliases = null)
 {
-    public IReadOnlyList<string> StackNames => [.. StackPackageIds.Keys];
+    /// <summary>
+    /// Names safe to offer. Contested ones are withheld: planning refuses them,
+    /// so listing them in the prompt only sets up a guaranteed failure. This
+    /// matters on the fallback path, where the maps come from the built-in list
+    /// but the conflicts came from the feed.
+    /// </summary>
+    public IReadOnlyList<string> StackNames
+        => AmbiguousAliases is { Count: > 0 } ambiguous
+            ? [.. StackPackageIds.Keys.Where(name => !ambiguous.Contains(name))]
+            : [.. StackPackageIds.Keys];
 
     public bool SupportsStack(string stack) => StackPackageId(stack) is not null;
 

@@ -68,6 +68,17 @@ internal sealed class SetupFeatureResolver(
         {
             string feature = NormalizeFeature(rawFeature);
 
+            // Fold before dispatch, not inside the default arm. A stack with
+            // dedicated handling has to reach its own case: an alternate
+            // spelling of dotnet folded afterwards would already have been
+            // routed to the generic path and picked up a worker and a bundle
+            // that dotnet doesn't use.
+            if (!IsResolverKeyword(feature))
+            {
+                stacks ??= await _stackCatalog.GetStacksAsync(options.Source, options.IncludePrerelease, cancellationToken);
+                feature = stacks.CanonicalStackName(feature);
+            }
+
             switch (feature)
             {
                 case "host":
@@ -98,12 +109,6 @@ internal sealed class SetupFeatureResolver(
                     throw new SetupConfigurationException($"The '{rawFeature}' feature is not supported. Use 'dotnet'.");
 
                 default:
-                    // Fold alternate spellings before anything records the name.
-                    // Everything downstream, including the machine-readable
-                    // setup.started event, has to agree on which one it planned.
-                    stacks ??= await _stackCatalog.GetStacksAsync(options.Source, options.IncludePrerelease, cancellationToken);
-                    feature = stacks.CanonicalStackName(feature);
-
                     if (!AddFeature(features, featureNames, feature))
                     {
                         break;
@@ -241,6 +246,14 @@ internal sealed class SetupFeatureResolver(
             runtimeFeatures.Add(new SetupRuntimeFeature(name, profileRuntime, installWorker));
         }
     }
+
+    /// <summary>
+    /// Feature names this resolver dispatches on directly rather than treating
+    /// as stack aliases. Folding them would be a no-op, and asking the catalog
+    /// would put a host-only run on the network for nothing.
+    /// </summary>
+    private static bool IsResolverKeyword(string feature)
+        => feature is "host" or "runtime" or ".net" or "dotnet-inprocess";
 
     private static string NormalizeFeature(string value)
     {

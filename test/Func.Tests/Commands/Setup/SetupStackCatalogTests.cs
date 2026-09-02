@@ -189,6 +189,72 @@ public class SetupStackCatalogTests
     }
 
     [Fact]
+    public async Task GetStacksAsync_FallbackWithConflicts_DoesNotOfferTheContestedName()
+    {
+        // The fallback maps come from the built-in list, so a contested name is
+        // still a key in them. Offering it would put a stack in the prompt that
+        // planning is guaranteed to reject.
+        SinglePage(
+                Result("azure.functions.cli.workloads.node", ["node"], kind: "workload"),
+                Result("contoso.rogue.node", ["node"], kind: "workload")
+            );
+        SetupStackCatalog stackCatalog = new(_catalog);
+
+        SetupStackSnapshot snapshot = await stackCatalog.GetStacksAsync(source: null, includePrerelease: false, CancellationToken.None);
+
+        snapshot.IsAmbiguous("node").Should().BeTrue();
+        snapshot.StackNames.Should().NotContain("node");
+        snapshot.StackNames.Should().Contain("python", "stacks nobody contested stay on offer");
+    }
+
+    [Fact]
+    public async Task GetStacksAsync_StackSquattingATemplatesAlias_LeavesTheRealTemplatesIntact()
+    {
+        // The templates map is only ever written by content packages, and it is
+        // keyed by the stripped stack name while `ambiguous` holds raw aliases.
+        // A stack package grabbing 'node-templates' therefore can't land in the
+        // map at all, so the surviving entry is the legitimate package, not the
+        // squatter's.
+        SinglePage(
+                Result("azure.functions.cli.workloads.templates.node", ["node-templates"], kind: "content"),
+                Result("contoso.rogue.templates", ["node-templates"], kind: "workload"),
+                Result("azure.functions.cli.workloads.node", ["node"], kind: "workload")
+            );
+        SetupStackCatalog stackCatalog = new(_catalog);
+
+        SetupStackSnapshot snapshot = await stackCatalog.GetStacksAsync(source: null, includePrerelease: false, CancellationToken.None);
+
+        snapshot.IsAmbiguous("node-templates").Should().BeTrue();
+        snapshot.StackNames.Should().Equal(["node"], "the squatter's primary alias is contested, so it is not a stack");
+        snapshot.TemplatesPackageId("node").Should().Be(
+            "azure.functions.cli.workloads.templates.node",
+            "only content packages can write the templates map, so the squatter never reaches it");
+    }
+
+    [Fact]
+    public async Task GetStacksAsync_TwoContentPackagesClaimOneTemplatesAlias_MarksTheStackContested()
+    {
+        // Conflicts between content packages are keyed by the stripped name, so
+        // this is the case that must fail closed. It takes the whole stack with
+        // it: 'node' is contested, so discovery yields no stacks at all and the
+        // built-in list backs the snapshot. The contested name still can't be
+        // offered or planned, which is the invariant that matters; whatever the
+        // fallback happens to hold for it is never reached.
+        SinglePage(
+                Result("azure.functions.cli.workloads.templates.node", ["node-templates"], kind: "content"),
+                Result("contoso.rogue.templates", ["node-templates"], kind: "content"),
+                Result("azure.functions.cli.workloads.node", ["node"], kind: "workload")
+            );
+        SetupStackCatalog stackCatalog = new(_catalog);
+
+        SetupStackSnapshot snapshot = await stackCatalog.GetStacksAsync(source: null, includePrerelease: false, CancellationToken.None);
+
+        snapshot.IsAmbiguous("node").Should().BeTrue();
+        snapshot.IsAmbiguous("node-templates").Should().BeTrue();
+        snapshot.StackNames.Should().NotContain("node");
+    }
+
+    [Fact]
     public async Task GetStacksAsync_StackReusingAContentAlias_IsAmbiguous()
     {
         // Alias ownership spans kinds. A stack grabbing the node worker's alias

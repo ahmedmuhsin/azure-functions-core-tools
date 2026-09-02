@@ -326,6 +326,30 @@ public class SetupStackDiscoveryWiringTests
             runtimes,
             Notes: null));
 
+    [Fact]
+    public async Task FeatureResolver_DotNetSecondaryAlias_GetsDotNetHandlingNotTheGenericPath()
+    {
+        // dotnet installs no worker, no bundle, and uses a distinct profile
+        // runtime. Folding after the switch would have routed an alternate
+        // spelling down the generic arm and picked up all three.
+        _stackCatalog.GetStacksAsync(Arg.Any<string?>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+            .Returns(new SetupStackSnapshot(
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["dotnet"] = "contoso.workloads.dotnet" },
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+                AmbiguousAliases: null,
+                SecondaryAliases: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["csharp"] = "dotnet" }));
+
+        SetupFeaturePlan? aliased = await Resolver().ResolveFeaturesAsync(Options(["csharp"]), CancellationToken.None);
+        SetupFeaturePlan? direct = await Resolver().ResolveFeaturesAsync(Options(["dotnet"]), CancellationToken.None);
+
+        aliased.Should().NotBeNull();
+        aliased!.Features.Should().Equal(direct!.Features);
+        aliased.WorkerRuntimes.Should().Equal(direct.WorkerRuntimes);
+        aliased.IncludeExtensionBundle.Should().Be(direct.IncludeExtensionBundle);
+        aliased.RuntimeFeatures.Should().ContainSingle()
+            .Which.Should().BeEquivalentTo(direct.RuntimeFeatures.Single());
+    }
+
     private void WithDiscoveredStacks(
         Dictionary<string, string> stacks,
         Dictionary<string, string>? templates = null)
