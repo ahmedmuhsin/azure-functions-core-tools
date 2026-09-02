@@ -350,6 +350,36 @@ public class SetupStackDiscoveryWiringTests
             .Which.Should().BeEquivalentTo(direct.RuntimeFeatures.Single());
     }
 
+    [Fact]
+    public async Task FeatureResolver_AlternateOfAContestedStack_FailsClosed()
+    {
+        // The end of the path the catalog test guards: an alternate spelling of
+        // a contested stack must fold and be refused, not slip through as an
+        // unknown runtime and plan a worker for a package that doesn't exist.
+        _stackCatalog.GetStacksAsync(Arg.Any<string?>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+            .Returns(new SetupStackSnapshot(
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "node" },
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["nodejs"] = "node" }));
+
+        SetupFeaturePlan? featurePlan = await Resolver().ResolveFeaturesAsync(Options(["nodejs"]), CancellationToken.None);
+        featurePlan.Should().NotBeNull();
+        featurePlan!.Features.Should().Equal(["node"], "the alternate has to fold before anything is recorded");
+
+        SetupDependencyPlanBuilder builder = new(_bundleReader, _stackCatalog);
+        SetupDependencyPlan plan = await builder.BuildDependencyPlanAsync(
+            Options(["nodejs"]),
+            featurePlan,
+            SetupProfileScope.Unconstrained,
+            CancellationToken.None);
+
+        plan.Failures.Should().ContainSingle()
+            .Which.Message.Should().Contain("More than one workload package on this feed claims");
+        plan.Dependencies.Should().NotContain(d => d.Kind == SetupDependencyKind.Worker);
+        plan.Dependencies.Should().NotContain(d => d.Kind == SetupDependencyKind.Stack);
+    }
+
     private void WithDiscoveredStacks(
         Dictionary<string, string> stacks,
         Dictionary<string, string>? templates = null)

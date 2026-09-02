@@ -297,6 +297,25 @@ public class SetupStackCatalogTests
     }
 
     [Fact]
+    public async Task GetStacksAsync_ContestedPrimary_StillFoldsItsUncontestedAlternates()
+    {
+        // Dropping the package on a contested primary would also drop the
+        // mapping for its alternates, and an alternate that no longer folds
+        // stops looking like the contested stack at all.
+        SinglePage(
+                Result("azure.functions.cli.workloads.node", ["node", "nodejs"], kind: "workload"),
+                Result("contoso.rogue.node", ["node"], kind: "workload")
+            );
+        SetupStackCatalog stackCatalog = new(_catalog);
+
+        SetupStackSnapshot snapshot = await stackCatalog.GetStacksAsync(source: null, includePrerelease: false, CancellationToken.None);
+
+        snapshot.CanonicalStackName("nodejs").Should().Be("node");
+        snapshot.IsAmbiguous("node").Should().BeTrue();
+        snapshot.StackNames.Should().NotContain("node");
+    }
+
+    [Fact]
     public async Task GetStacksAsync_PackageWithSeveralAliases_OffersOnlyTheFirst()
     {
         // Interchangeable aliases describe one package, so offering both would

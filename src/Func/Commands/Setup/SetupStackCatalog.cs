@@ -212,13 +212,11 @@ internal sealed class SetupStackCatalog(IWorkloadCatalog workloadCatalog) : ISet
             }
 
             string primary = result.Aliases[0];
-            if (ambiguous.Contains(primary) || !OwnedBy(claims, primary, result.PackageId))
-            {
-                continue;
-            }
 
-            stacks[primary] = result.PackageId;
-
+            // Record alternate spellings before deciding the primary's fate. If
+            // the primary is contested they still have to fold onto it, or the
+            // alternate escapes as an unknown runtime, misses the ambiguity
+            // check that only knows the primary, and half-installs.
             foreach (string alias in result.Aliases.Skip(1))
             {
                 if (!ambiguous.Contains(alias) && OwnedBy(claims, alias, result.PackageId))
@@ -226,6 +224,13 @@ internal sealed class SetupStackCatalog(IWorkloadCatalog workloadCatalog) : ISet
                     secondary[alias] = primary;
                 }
             }
+
+            if (ambiguous.Contains(primary) || !OwnedBy(claims, primary, result.PackageId))
+            {
+                continue;
+            }
+
+            stacks[primary] = result.PackageId;
         }
 
         foreach (string alias in ambiguous)
@@ -240,12 +245,12 @@ internal sealed class SetupStackCatalog(IWorkloadCatalog workloadCatalog) : ISet
 
         // An empty result usually means the query failed silently rather than
         // "no stacks exist", so prefer the built-in list over offering nothing.
-        // Conflicting claims still travel with it, otherwise a feed where every
-        // alias collides would empty the map and get the built-in ids waved
-        // through as if nothing were wrong.
+        // Conflicting claims and the alias mappings ride along, otherwise a feed
+        // where every alias collides would empty the map and get the built-in
+        // ids waved through as if nothing were wrong.
         return ambiguous.Count == 0
             ? SetupDependency.BuiltInStackSnapshot
-            : SetupDependency.BuiltInStackSnapshot with { AmbiguousAliases = ambiguous };
+            : SetupDependency.BuiltInStackSnapshot with { AmbiguousAliases = ambiguous, SecondaryAliases = secondary };
     }
 
     /// <summary>
