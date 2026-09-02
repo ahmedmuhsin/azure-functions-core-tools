@@ -228,9 +228,8 @@ internal class NuGetProtocolSourceClient(SourceRepository repository)
     // Hits without a `packageTypes` array fall through (kept): V3 search
     // responses don't guarantee the field, and dropping silent hits would
     // empty out compliant feeds. When the array is present, require the
-    // FuncCliWorkload entry so arbitrary nuget.org packages don't leak
-    // through when the server-side `packageType=` filter is ignored (e.g.
-    // for empty queries).
+    // FuncCliWorkload entry so arbitrary packages don't leak through from a
+    // feed that ignores the server-side `packageType=` filter.
     private static bool HitMatchesWorkloadPackageType(JToken? packageTypes)
     {
         if (packageTypes is not JArray array || array.Count == 0)
