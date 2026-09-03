@@ -73,16 +73,37 @@ internal sealed record SetupStackSnapshot(
         return SecondaryAliases is { } aliases && aliases.TryGetValue(trimmed, out string? primary) ? primary : trimmed;
     }
 
+    /// <summary>
+    /// Resolves a stack to its package, or <c>null</c> when the name is unknown
+    /// or contested. Contested names resolve to nothing here rather than
+    /// relying on callers to ask <see cref="IsAmbiguous"/> first, since on the
+    /// fallback path the built-in maps still hold an entry for them.
+    /// </summary>
     public string? StackPackageId(string stack)
-        => !string.IsNullOrWhiteSpace(stack) && StackPackageIds.TryGetValue(CanonicalStackName(stack), out string? id) ? id : null;
+        => Resolve(StackPackageIds, stack);
 
+    /// <inheritdoc cref="StackPackageId"/>
     public string? TemplatesPackageId(string stack)
-        => !string.IsNullOrWhiteSpace(stack) && TemplatesPackageIds.TryGetValue(CanonicalStackName(stack), out string? id) ? id : null;
+        => Resolve(TemplatesPackageIds, stack);
 
     public bool IsAmbiguous(string alias)
         => AmbiguousAliases is { } ambiguous
             && !string.IsNullOrWhiteSpace(alias)
             && ambiguous.Contains(alias.Trim());
+
+    private string? Resolve(IReadOnlyDictionary<string, string> map, string stack)
+    {
+        if (string.IsNullOrWhiteSpace(stack))
+        {
+            return null;
+        }
+
+        // Folding first means an alternate spelling of a contested stack is
+        // refused along with it; a contested name is its own canonical, so the
+        // direct case lands here too.
+        string canonical = CanonicalStackName(stack);
+        return !IsAmbiguous(canonical) && map.TryGetValue(canonical, out string? id) ? id : null;
+    }
 }
 
 internal sealed class SetupStackCatalog(IWorkloadCatalog workloadCatalog) : ISetupStackCatalog

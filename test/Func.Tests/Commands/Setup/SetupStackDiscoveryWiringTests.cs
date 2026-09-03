@@ -407,11 +407,28 @@ public class SetupStackDiscoveryWiringTests
         offered.Should().NotContain(["runtime", "host"]);
     }
 
+    /// <summary>
+    /// Every name the resolver reserves, plus <c>dotnet</c>, which reaches the
+    /// same built-in arm but is deliberately still offerable. Driven off the
+    /// production array so the two can't drift.
+    /// </summary>
+    public static TheoryData<string> FeatureWords
+    {
+        get
+        {
+            TheoryData<string> data = [];
+            foreach (string keyword in SetupFeatureResolver.ResolverKeywords)
+            {
+                data.Add(keyword);
+            }
+
+            data.Add(SetupRuntimes.DotNetFeature);
+            return data;
+        }
+    }
+
     [Theory]
-    [InlineData("host")]
-    [InlineData("runtime")]
-    [InlineData("dotnet")]
-    [InlineData(SetupRuntimes.DotNetProfileRuntime)]
+    [MemberData(nameof(FeatureWords))]
     public async Task FeatureResolver_StackNamedAfterAFeatureWord_IsEitherWithheldOrActuallyPlanned(string name)
     {
         // Every name the switch dispatches on has to land on one side of this:

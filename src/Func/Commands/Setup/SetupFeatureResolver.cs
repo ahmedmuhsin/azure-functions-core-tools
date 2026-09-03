@@ -263,8 +263,11 @@ internal sealed class SetupFeatureResolver(
     /// but that arm keeps the name, so a discovered dotnet stack still resolves
     /// and is safe to offer.
     /// </remarks>
+    internal static readonly string[] ResolverKeywords =
+        ["host", "runtime", ".net", "dotnet-inprocess", SetupRuntimes.DotNetProfileRuntime];
+
     private static bool IsResolverKeyword(string feature)
-        => feature is "host" or "runtime" or ".net" or "dotnet-inprocess" or SetupRuntimes.DotNetProfileRuntime;
+        => ResolverKeywords.Contains(feature, StringComparer.OrdinalIgnoreCase);
 
     private static string NormalizeFeature(string value)
     {

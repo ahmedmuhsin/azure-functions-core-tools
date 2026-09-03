@@ -297,6 +297,50 @@ public class SetupStackCatalogTests
     }
 
     [Fact]
+    public void Snapshot_ContestedName_ResolvesToNothingWithoutTheCallerAsking()
+    {
+        // The record must not be able to say both "node is contested" and
+        // "node's package is X". On the fallback path the built-in maps still
+        // hold an entry for a contested name, so the accessor has to refuse it
+        // rather than leaving the invariant to whoever calls next.
+        SetupStackSnapshot snapshot = new(
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["node"] = "contoso.node", ["python"] = "contoso.python" },
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["node"] = "contoso.templates.node" },
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "node" },
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["nodejs"] = "node" });
+
+        snapshot.StackPackageId("node").Should().BeNull();
+        snapshot.TemplatesPackageId("node").Should().BeNull();
+        snapshot.SupportsStack("node").Should().BeFalse();
+
+        snapshot.StackPackageId("nodejs").Should().BeNull("an alternate folding onto a contested name is contested too");
+
+        snapshot.StackPackageId("python").Should().Be("contoso.python", "uncontested names are unaffected");
+    }
+
+    [Fact]
+    public async Task GetStacksAsync_UntaggedPackageClaimingAStackAlias_ContestsIt()
+    {
+        // A hit with no kind: tag isn't a stack, but it still claims its alias,
+        // and WorkloadPackageSource would refuse that alias for the same reason.
+        // Pinning the choice: ownership is decided by the alias, not the kind,
+        // so an untagged package takes the name out of play rather than being
+        // ignored and letting the alias resolve to whoever else wants it.
+        SinglePage(
+                Result("azure.functions.cli.workloads.node", ["node"], kind: "workload"),
+                Result("contoso.untagged", ["node"], kind: null),
+                Result("azure.functions.cli.workloads.python", ["python"], kind: "workload")
+            );
+        SetupStackCatalog stackCatalog = new(_catalog);
+
+        SetupStackSnapshot snapshot = await stackCatalog.GetStacksAsync(source: null, includePrerelease: false, CancellationToken.None);
+
+        snapshot.IsAmbiguous("node").Should().BeTrue();
+        snapshot.StackNames.Should().NotContain("node");
+        snapshot.StackNames.Should().Contain("python");
+    }
+
+    [Fact]
     public async Task GetStacksAsync_ContestedPrimary_StillFoldsItsUncontestedAlternates()
     {
         // Dropping the package on a contested primary would also drop the
@@ -445,7 +489,7 @@ public class SetupStackCatalogTests
             .Returns(results);
     }
 
-    private static CatalogSearchResult Result(string packageId, string[] aliases, string kind)
+    private static CatalogSearchResult Result(string packageId, string[] aliases, string? kind)
         => new(
             packageId,
             new NuGetVersion("1.0.0"),
