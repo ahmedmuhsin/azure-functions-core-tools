@@ -252,12 +252,19 @@ internal sealed class SetupFeatureResolver(
     }
 
     /// <summary>
-    /// Feature names this resolver dispatches on directly rather than treating
-    /// as stack aliases. Folding them would be a no-op, and asking the catalog
-    /// would put a host-only run on the network for nothing.
+    /// Feature names the switch below dispatches on directly rather than
+    /// treating as stack aliases. Two consequences: folding them is a no-op and
+    /// would put a host-only run on the network, and a discovered stack under
+    /// one of these names can't be offered, because selecting it lands on the
+    /// built-in arm and the package is never planned.
     /// </summary>
+    /// <remarks>
+    /// <c>dotnet</c> is deliberately absent. It reaches the built-in arm too,
+    /// but that arm keeps the name, so a discovered dotnet stack still resolves
+    /// and is safe to offer.
+    /// </remarks>
     private static bool IsResolverKeyword(string feature)
-        => feature is "host" or "runtime" or ".net" or "dotnet-inprocess";
+        => feature is "host" or "runtime" or ".net" or "dotnet-inprocess" or SetupRuntimes.DotNetProfileRuntime;
 
     private static string NormalizeFeature(string value)
     {

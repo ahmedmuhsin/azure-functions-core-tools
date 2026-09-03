@@ -407,6 +407,50 @@ public class SetupStackDiscoveryWiringTests
         offered.Should().NotContain(["runtime", "host"]);
     }
 
+    [Theory]
+    [InlineData("host")]
+    [InlineData("runtime")]
+    [InlineData("dotnet")]
+    [InlineData(SetupRuntimes.DotNetProfileRuntime)]
+    public async Task FeatureResolver_StackNamedAfterAFeatureWord_IsEitherWithheldOrActuallyPlanned(string name)
+    {
+        // Every name the switch dispatches on has to land on one side of this:
+        // withheld from the prompt, or offered and genuinely planned. Showing a
+        // package and then installing something else is the failure. Asserting
+        // the invariant rather than a keyword list maintained by hand, since
+        // that list is what went wrong.
+        const string packageId = "contoso.workloads.thing";
+        WithDiscoveredStacks(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { [name] = packageId });
+        IWorkloadStore store = Substitute.For<IWorkloadStore>();
+        store.GetWorkloadsAsync(Arg.Any<CancellationToken>()).Returns([]);
+        ICliConfigurationProvider configuration = Substitute.For<ICliConfigurationProvider>();
+        configuration.GetProjectConfiguration(Arg.Any<DirectoryInfo>()).Returns(new ConfigurationBuilder().Build());
+        SelectAllInteractionService interaction = new();
+        SetupFeatureResolver resolver = new(interaction, store, configuration, _stackCatalog);
+
+        SetupFeaturePlan? featurePlan = await resolver.ResolveFeaturesAsync(Options([]), CancellationToken.None);
+
+        bool offered = interaction.MultiSelectionChoices
+            .SelectMany(static choices => choices)
+            .Any(choice => string.Equals(choice.Value, name, StringComparison.OrdinalIgnoreCase));
+        if (!offered)
+        {
+            return;
+        }
+
+        featurePlan.Should().NotBeNull();
+        SetupDependencyPlanBuilder builder = new(_bundleReader, _stackCatalog);
+        SetupDependencyPlan plan = await builder.BuildDependencyPlanAsync(
+            Options([]),
+            featurePlan!,
+            SetupProfileScope.Unconstrained,
+            CancellationToken.None);
+
+        plan.Dependencies.Should().Contain(
+            d => d.Kind == SetupDependencyKind.Stack && d.PackageId == packageId,
+            $"'{name}' was offered as a stack, so selecting it must plan {packageId}");
+    }
+
     private void WithDiscoveredStacks(
         Dictionary<string, string> stacks,
         Dictionary<string, string>? templates = null)
