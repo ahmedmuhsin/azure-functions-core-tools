@@ -1,6 +1,7 @@
 // Copyright (c) .NET Foundation. All rights reserved.
 // Licensed under the MIT License. See LICENSE in the project root for license information.
 
+using System.Collections.Frozen;
 using Azure.Functions.Cli.Configuration;
 using Azure.Functions.Cli.Console;
 using Azure.Functions.Cli.Workloads.Storage;
@@ -263,11 +264,11 @@ internal sealed class SetupFeatureResolver(
     /// but that arm keeps the name, so a discovered dotnet stack still resolves
     /// and is safe to offer.
     /// </remarks>
-    internal static readonly string[] ResolverKeywords =
-        ["host", "runtime", ".net", "dotnet-inprocess", SetupRuntimes.DotNetProfileRuntime];
+    internal static readonly FrozenSet<string> ResolverKeywords =
+        new[] { "host", "runtime", ".net", "dotnet-inprocess", SetupRuntimes.DotNetProfileRuntime }
+            .ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
-    private static bool IsResolverKeyword(string feature)
-        => ResolverKeywords.Contains(feature, StringComparer.OrdinalIgnoreCase);
+    private static bool IsResolverKeyword(string feature) => ResolverKeywords.Contains(feature);
 
     private static string NormalizeFeature(string value)
     {
