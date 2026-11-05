@@ -17,8 +17,8 @@ namespace Azure.Functions.Cli.E2ETests.Commands.FuncStart
     public class RustTests(ITestOutputHelper log) : BaseE2ETests(log)
     {
         // Set this to a checkout of the Rust SDK workspace (the folder that holds crates/) to run the
-        // test that calls a function. The scaffolded manifest names crates that are not published yet,
-        // so that test points them at this checkout.
+        // test that calls a function. The scaffolded manifest names a crate that is not published yet,
+        // so that test points it at this checkout.
         private const string SdkDirectoryVariable = "RUST_E2E_SDK_DIR";
 
         // A worker that needs no crates. It records its working directory and the arguments the host gave
@@ -247,7 +247,7 @@ namespace Azure.Functions.Cli.E2ETests.Commands.FuncStart
                 .WithEnvironmentVariable(Common.Constants.FunctionsCliNativeLanguage, "rust")
                 .Execute(arguments);
 
-            response.Should().Be("Hello from Rust Worker!");
+            response.Should().Be("hello world");
             File.Exists(binaryPath).Should().BeTrue();
             Directory.Exists(Path.Combine(WorkingDirectory, "bin")).Should().BeFalse("only 'func pack' writes in bin");
             if (noBuild)
@@ -314,13 +314,11 @@ namespace Azure.Functions.Cli.E2ETests.Commands.FuncStart
         private void PointTheSdkDependenciesAt(string sdkDirectory)
         {
             var manifestPath = Path.Combine(WorkingDirectory, "Cargo.toml");
-            var crates = sdkDirectory.Replace('\\', '/').TrimEnd('/') + "/crates";
+            var crate = sdkDirectory.Replace('\\', '/').TrimEnd('/') + "/crates/azure-functions-rust";
             var lines = File.ReadAllLines(manifestPath)
-                .Select(line => line.StartsWith("azure-functions-rust-sdk", StringComparison.Ordinal)
-                    ? $"azure-functions-rust-sdk = {{ path = \"{crates}/azure-functions-rust-sdk\" }}"
-                    : line.StartsWith("azure-functions-rust-worker", StringComparison.Ordinal)
-                        ? $"azure-functions-rust-worker = {{ path = \"{crates}/azure-functions-rust-worker\" }}"
-                        : line);
+                .Select(line => line.StartsWith("azure-functions-rust = ", StringComparison.Ordinal)
+                    ? $"azure-functions-rust = {{ path = \"{crate}\", features = [\"worker\"] }}"
+                    : line);
             File.WriteAllLines(manifestPath, lines);
         }
     }

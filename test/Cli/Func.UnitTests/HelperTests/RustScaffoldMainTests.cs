@@ -7,13 +7,12 @@ using Xunit;
 
 namespace Azure.Functions.Cli.UnitTests.HelperTests
 {
-    // The sample that 'func init' writes for a Rust app is written against crates that are not published, so a unit test cannot
-    // compile it. These tests hold what a compile and a run against the worker library showed. The sample reads the startup
-    // arguments of the worker only through the worker library, which reads both spellings that a launcher passes, and it uses no
-    // named outputs, which the SDK removed.
+    // The sample that 'func init' writes for a Rust app is written against a crate that is not published, so a unit test cannot
+    // compile it. These tests hold what a compile and a run against the crate showed. The sample is built on the one
+    // azure-functions-rust crate, which reads the startup arguments of the worker itself, so the sample names none of them.
     public class RustScaffoldMainTests
     {
-        // The nine startup arguments that the worker library reads, the plain ones that the host passes and the prefixed ones that
+        // The nine startup arguments that the worker reads, the plain ones that the host passes and the prefixed ones that
         // a proxy in front of the host passes.
         private static readonly string[] _startupArguments =
         [
@@ -29,22 +28,27 @@ namespace Azure.Functions.Cli.UnitTests.HelperTests
         ];
 
         [Fact]
-        public async Task MainRs_ReadsItsArgumentsThroughTheWorkerLibrary()
+        public async Task MainRs_BuildsTheAppWithTheCrateOfTheFacade()
         {
             var code = CodeOf(await StaticResources.MainRs);
 
-            code.Should().Contain("StartupArguments::from_env()", "a comment that names the call does not read the arguments");
+            code.Should().Contain("use azure_functions_rust::prelude::*;")
+                .And.Contain("app()")
+                .And.Contain(".http(")
+                .And.Contain(".run()");
         }
 
-        // The worker library holds its own examples to the same rule, and a clippy rule disallows the two calls outside the library.
-        // StartupArguments::parse takes the arguments from its caller, so a sample that calls it has read them itself.
-        [Fact]
-        public async Task MainRs_DoesNotReadTheArgumentsOfTheProcessItself()
+        // The lower level crates are an implementation detail of the one crate that the sample uses.
+        [Theory]
+        [InlineData("azure_functions_rust_sdk")]
+        [InlineData("azure_functions_rust_worker")]
+        [InlineData("serde_json")]
+        [InlineData("tokio")]
+        public async Task MainRs_UsesNoLowerLevelCrate(string crate)
         {
             var source = await StaticResources.MainRs;
 
-            source.Should().NotContain("env::args", "that also matches env::args_os, and the worker library reads the arguments in one place")
-                .And.NotContain("StartupArguments::parse");
+            source.Should().NotContain(crate);
         }
 
         // A worker that reads one spelling only fails to start when a launcher passes the other one.
@@ -55,54 +59,47 @@ namespace Azure.Functions.Cli.UnitTests.HelperTests
 
             var named = _startupArguments.Where(argument => source.Contains(argument, StringComparison.Ordinal)).ToList();
 
-            named.Should().BeEmpty("the worker library reads the startup arguments, in both spellings, and the sample names none of them");
+            named.Should().BeEmpty("the crate reads the startup arguments, in both spellings, and the sample names none of them");
+            source.Should().NotContain("env::args");
         }
 
-        // StartupArguments carries the largest gRPC message that the launcher allows. It reaches the worker only through the Config.
+        // A timer trigger needs storage, and 'func init' leaves AzureWebJobsStorage empty. The host cannot start its listener
+        // then, so the sample registers an HTTP function only.
         [Fact]
-        public async Task MainRs_AppliesTheMessageLimitThatTheStartupArgumentsCarry()
-        {
-            var source = await StaticResources.MainRs;
-
-            CodeOf(source).Should().Contain(".with_startup_arguments(&startup)");
-            source.Should().NotContain("with_grpc_max_message_length", "that method of the Config reads one spelling of the argument");
-        }
-
-        [Fact]
-        public async Task MainRs_ConnectsWithTheEndpointAndTheIdsOfTheStartupArguments()
+        public async Task MainRs_RegistersAnHttpFunctionOnly()
         {
             var code = CodeOf(await StaticResources.MainRs);
 
-            code.Should().Contain("startup.endpoint()")
-                .And.Contain("startup.worker_id()")
-                .And.Contain("startup.request_id()");
-        }
-
-        // The SDK removed named outputs. The response of the sample comes back as the return value, which is all that the shared
-        // sample of the SDK uses, and an InvocationResult that names outputs does not compile against it.
-        [Fact]
-        public async Task MainRs_UsesNoNamedOutputs()
-        {
-            var source = await StaticResources.MainRs;
-
-            source.Should().NotContain("outputs");
-            CodeOf(source).Should().Contain("return_value");
+            code.Should().NotContain(".timer(");
+            code.Should().NotContain("TimerTrigger");
         }
 
         // main.rs and Cargo.toml are two files of the scaffold, and a unit test cannot compile them together.
-        [Theory]
-        [InlineData("azure_functions_rust_sdk", "azure-functions-rust-sdk")]
-        [InlineData("azure_functions_rust_worker", "azure-functions-rust-worker")]
-        [InlineData("serde_json", "serde_json")]
-        [InlineData("tokio", "tokio")]
-        public async Task ScaffoldManifest_DeclaresTheCratesThatMainRsUses(string crateInSource, string crateInManifest)
+        [Fact]
+        public async Task ScaffoldManifest_DeclaresTheCrateThatMainRsUsesWithTheWorkerFeature()
         {
             var source = await StaticResources.MainRs;
-            var manifest = await StaticResources.CargoToml;
+            var manifest = ManifestLines(await StaticResources.CargoToml);
 
-            CodeOf(source).Should().Contain($"{crateInSource}::", "the sample uses the crate");
-            manifest.Replace("\r\n", "\n").Split('\n')
-                .Should().Contain(line => line.StartsWith($"{crateInManifest} = ", StringComparison.Ordinal));
+            CodeOf(source).Should().Contain("azure_functions_rust::", "the sample uses the crate");
+            manifest.Should().ContainSingle(line => line.StartsWith("azure-functions-rust = ", StringComparison.Ordinal));
+            manifest.Single(line => line.StartsWith("azure-functions-rust = ", StringComparison.Ordinal))
+                .Should().Contain("features = [\"worker\"]", "the worker feature is the one that runs the app");
+        }
+
+        [Fact]
+        public async Task ScaffoldManifest_HasThatDependencyOnly()
+        {
+            var manifest = ManifestLines(await StaticResources.CargoToml);
+
+            var dependencies = manifest
+                .SkipWhile(line => line != "[dependencies]")
+                .Skip(1)
+                .TakeWhile(line => !line.StartsWith('['))
+                .Where(line => line.Length > 0 && !line.StartsWith('#'))
+                .ToList();
+
+            dependencies.Should().ContainSingle().Which.Should().StartWith("azure-functions-rust = ");
         }
 
         // A comment is not a call. The checks for what the sample does look at its code only, and the checks for what it must not
@@ -110,12 +107,17 @@ namespace Azure.Functions.Cli.UnitTests.HelperTests
         [Fact]
         public void CodeOf_LeavesOutTheTextOfComments()
         {
-            var source = "// StartupArguments::from_env()\nlet a = 1; // startup.endpoint()\n  // run()\nlet b = 2;\n";
+            var source = "// app()\nlet a = 1; // .http(\n  // run()\nlet b = 2;\n";
 
             var code = CodeOf(source);
 
             code.Should().Contain("let a = 1;").And.Contain("let b = 2;");
-            code.Should().NotContain("from_env").And.NotContain("endpoint").And.NotContain("run()");
+            code.Should().NotContain("app()").And.NotContain(".http(").And.NotContain("run()");
+        }
+
+        private static List<string> ManifestLines(string manifest)
+        {
+            return manifest.Replace("\r\n", "\n").Split('\n').Select(line => line.TrimEnd()).ToList();
         }
 
         // The sample has no string that holds two slashes, so cutting a line at the first two slashes leaves all of its code.

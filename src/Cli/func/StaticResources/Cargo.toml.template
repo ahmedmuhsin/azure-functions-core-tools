@@ -3,10 +3,7 @@ name = "{PackageName}"
 version = "0.1.0"
 edition = "2024"
 
-# Provisional. The Azure Functions Rust crates are not published yet, so these
-# versions are placeholders. Point them at a path or git source until they are.
+# Provisional. The Azure Functions Rust crates are not published yet, so this
+# version is a placeholder. Point it at a path or git source until it is.
 [dependencies]
-azure-functions-rust-sdk = "0.1"
-azure-functions-rust-worker = "0.1"
-serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+azure-functions-rust = { version = "0.1", features = ["worker"] }
