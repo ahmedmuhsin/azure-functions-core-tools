@@ -174,6 +174,7 @@ a selection wizard.
 |---------|---------------------|
 | **Python** | Discovers Python executable, validates version, sets `languageWorkers__python__defaultExecutablePath` and `FUNCTIONS_WORKER_RUNTIME_VERSION` (e.g., `3.11`), enables `PYTHON_ENABLE_DEBUG_LOGGING=1` |
 | **Go** | Builds the local worker, or checks for an existing binary with `--no-build`. On Windows, sets the default native executable path to `bin\app.exe`. Explicit path settings have priority. Other platforms keep `bin/app`. |
+| **Rust** | Builds the local worker with `cargo build` in the debug profile and copies the binary to `target/func/app` (`target\func\app.exe` on Windows), and points the default native executable path at it on every OS. Explicit path settings have priority. `func pack` writes the package binary to `bin/app`, so a debug build that `func start` made is never packed. `func pack --no-build` and `func publish --no-build` warn when `bin/app` has debug information, which a debug build has, and still use the file. With `--no-build` it only checks that the binary exists, and needs no Rust toolchain. |
 | **.NET (in-proc)** | Runs `dotnet build`, then launches via `CoreToolsHost` child process (see [In-Proc Host Delegation](#in-proc-host-delegation)) |
 | **.NET (isolated)** | Injects `DOTNET_STARTUP_HOOKS=Microsoft.Azure.Functions.Worker.Core` when `--dotnet-isolated-debug` is used; sets `FUNCTIONS_ENABLE_DEBUGGER_WAIT=true` |
 | **PowerShell** | Validates `dotnet` CLI is available (required dependency) |
