@@ -217,6 +217,7 @@ namespace Azure.Functions.Cli.Actions.LocalActions
                 (ResolvedWorkerRuntime, ResolvedLanguage) = ResolveWorkerRuntimeAndLanguage(WorkerRuntime, Language);
 
                 Utilities.WarnIfGoWorkerRuntime(ResolvedWorkerRuntime);
+                Utilities.WarnIfRustWorkerRuntime(ResolvedWorkerRuntime);
 
                 // Order here is important: each language may have multiple runtimes, and each unique (language, worker-runtime) pair
                 // may have its own programming model. Thus, we assume that ResolvedLanguage and ResolvedWorkerRuntime are properly set
@@ -238,9 +239,9 @@ namespace Azure.Functions.Cli.Actions.LocalActions
 
             TelemetryHelpers.AddCommandEventToDictionary(TelemetryCommandEvents, "WorkerRuntime", ResolvedWorkerRuntime.ToString());
 
-            if (ResolvedWorkerRuntime == Helpers.WorkerRuntime.Go && InitDocker)
+            if (WorkerRuntimeLanguageHelper.IsNative(ResolvedWorkerRuntime) && InitDocker)
             {
-                throw new CliException("Docker support for the Go worker runtime is not yet available.");
+                throw new CliException(NativeWorkerHelpers.GetDockerNotAvailableMessage(ResolvedWorkerRuntime));
             }
 
             ValidateTargetFramework();
@@ -259,12 +260,16 @@ namespace Azure.Functions.Cli.Actions.LocalActions
                         Utilities.SanitizeLiteral(Path.GetFileName(Environment.CurrentDirectory), allowed: "-_"),
                         SkipGoModTidy);
                 }
+                else if (ResolvedWorkerRuntime == Helpers.WorkerRuntime.Rust)
+                {
+                    await RustHelpers.SetupProject(Path.GetFileName(Environment.CurrentDirectory));
+                }
                 else
                 {
                     await InitLanguageSpecificArtifacts(ResolvedWorkerRuntime, ResolvedLanguage, ResolvedProgrammingModel, managedDependenciesOption, GeneratePythonDocumentation);
                 }
 
-                await WriteFiles();
+                await WriteFiles(ResolvedWorkerRuntime);
 
                 await WriteHostJson(ResolvedWorkerRuntime, managedDependenciesOption, ExtensionBundle);
                 await WriteLocalSettingsJson(ResolvedWorkerRuntime, ResolvedProgrammingModel);
@@ -299,7 +304,7 @@ namespace Azure.Functions.Cli.Actions.LocalActions
             if (!string.IsNullOrEmpty(workerRuntimeString))
             {
                 workerRuntime = WorkerRuntimeLanguageHelper.NormalizeWorkerRuntime(workerRuntimeString);
-                if (workerRuntime == Helpers.WorkerRuntime.Go)
+                if (WorkerRuntimeLanguageHelper.IsNative(workerRuntime))
                 {
                     return (workerRuntime, string.Empty);
                 }
@@ -335,7 +340,7 @@ namespace Azure.Functions.Cli.Actions.LocalActions
             else
             {
                 workerRuntime = GlobalCoreToolsSettings.CurrentWorkerRuntime;
-                if (workerRuntime == Helpers.WorkerRuntime.Go)
+                if (WorkerRuntimeLanguageHelper.IsNative(workerRuntime))
                 {
                     return (workerRuntime, string.Empty);
                 }
@@ -462,27 +467,28 @@ namespace Azure.Functions.Cli.Actions.LocalActions
         {
             string localSettingsJsonContent = await StaticResources.LocalSettingsJson;
 
-            // The Go worker is registered with the host under the "native" runtime identifier,
+            // The native workers (Go and Rust) are registered with the host under the "native" runtime identifier,
             // so FUNCTIONS_WORKER_RUNTIME in local.settings.json must be "native" even though
-            // the CLI exposes the runtime as "go" everywhere else.
-            string workerRuntimeSetting = workerRuntime == Helpers.WorkerRuntime.Go
+            // the CLI exposes the runtime as "go" or "rust" everywhere else.
+            bool isNative = WorkerRuntimeLanguageHelper.IsNative(workerRuntime);
+            string workerRuntimeSetting = isNative
                 ? "native"
                 : WorkerRuntimeLanguageHelper.GetRuntimeMoniker(workerRuntime);
             localSettingsJsonContent = localSettingsJsonContent.Replace($"{{{Constants.FunctionsWorkerRuntime}}}", workerRuntimeSetting);
 
-            // For Go we leave AzureWebJobsStorage empty rather than seeding the storage
+            // For native languages we leave AzureWebJobsStorage empty rather than seeding the storage
             // emulator connection string. This avoids 'func azure functionapp publish -i -y' silently
             // overwriting a production app's AzureWebJobsStorage with 'UseDevelopmentStorage=true'.
-            string azureWebJobsStorageValue = workerRuntime == Helpers.WorkerRuntime.Go
+            string azureWebJobsStorageValue = isNative
                 ? string.Empty
                 : Constants.StorageEmulatorConnectionString;
             localSettingsJsonContent = localSettingsJsonContent.Replace($"{{{Constants.AzureWebJobsStorage}}}", azureWebJobsStorageValue);
 
-            // Add the explicit Go opt-in so the CLI doesn't have to fall back to scanning
-            // for go.mod on every command. See WorkerRuntimeLanguageHelper.GetCurrentWorkerRuntimeLanguage.
-            if (workerRuntime == Helpers.WorkerRuntime.Go)
+            // Add the explicit native language opt-in so the CLI doesn't have to fall back to scanning
+            // for go.mod or Cargo.toml on every command. See WorkerRuntimeLanguageHelper.GetCurrentWorkerRuntimeLanguage.
+            if (isNative)
             {
-                localSettingsJsonContent = AddLocalSetting(localSettingsJsonContent, Constants.FunctionsCliNativeLanguage, "go");
+                localSettingsJsonContent = AddLocalSetting(localSettingsJsonContent, Constants.FunctionsCliNativeLanguage, WorkerRuntimeLanguageHelper.GetRuntimeMoniker(workerRuntime));
             }
 
             if (workerRuntime == Helpers.WorkerRuntime.Powershell)
@@ -572,10 +578,10 @@ namespace Azure.Functions.Cli.Actions.LocalActions
             {
                 await FileSystemHelpers.WriteFileIfNotExists("Dockerfile", await StaticResources.DockerfileCustom);
             }
-            else if (workerRuntime == Helpers.WorkerRuntime.Go)
+            else if (WorkerRuntimeLanguageHelper.IsNative(workerRuntime))
             {
-                // Docker support for Go is validated up-front in RunAsync; this branch is unreachable in practice.
-                throw new CliException("Docker support for the Go worker runtime is not yet available.");
+                // Docker support for native languages is validated up-front in RunAsync; this branch is unreachable in practice.
+                throw new CliException(NativeWorkerHelpers.GetDockerNotAvailableMessage(workerRuntime));
             }
             else if (workerRuntime == Helpers.WorkerRuntime.None)
             {
@@ -624,11 +630,20 @@ namespace Azure.Functions.Cli.Actions.LocalActions
             }
         }
 
-        private static async Task WriteFiles()
+        private static async Task WriteFiles(WorkerRuntime workerRuntime)
         {
             foreach (var pair in FileToContentMap)
             {
-                await FileSystemHelpers.WriteFileIfNotExists(pair.Key.Value, await pair.Value);
+                var content = await pair.Value;
+
+                // A Rust build writes to target/, which the shared .gitignore does not cover, and the shared bin/
+                // rules would hide src/bin, where Cargo keeps extra binaries.
+                if (workerRuntime == Helpers.WorkerRuntime.Rust && pair.Key.Value == ".gitignore")
+                {
+                    content = RustHelpers.KeepCargoBinFolderTracked(RustHelpers.IgnoreTargetDirectory(content));
+                }
+
+                await FileSystemHelpers.WriteFileIfNotExists(pair.Key.Value, content);
             }
         }
 

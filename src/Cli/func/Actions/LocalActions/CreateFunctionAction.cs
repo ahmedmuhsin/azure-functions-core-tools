@@ -139,6 +139,17 @@ namespace Azure.Functions.Cli.Actions.LocalActions
                 return;
             }
 
+            // Rust registers functions in code as well, so there are no per-function templates to scaffold
+            // and 'func new' is intentionally not wired up.
+            if (_workerRuntime == WorkerRuntime.Rust)
+            {
+                ColoredConsole
+                    .Error
+                    .WriteLine(ErrorColor("The 'func new' command is not available for the Rust runtime."))
+                    .WriteLine(ErrorColor("Rust registers functions in code. Add a function by registering it in 'src/main.rs'."));
+                return;
+            }
+
             // Load templates and resolve language
             if (NeedsToLoadExtensionTemplates(_workerRuntime, Csx))
             {

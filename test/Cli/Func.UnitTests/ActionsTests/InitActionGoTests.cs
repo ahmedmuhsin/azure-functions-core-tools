@@ -255,11 +255,12 @@ namespace Azure.Functions.Cli.UnitTests.ActionsTests
 
         [Theory]
         [InlineData("python")]
-        [InlineData("rust")]
+        [InlineData("cpp")]
         [InlineData("")]
         public void GetCurrentWorkerRuntimeLanguage_NonGoSetting_FallsThroughToLegacyResolution(string flagValue)
         {
-            // Non-"go" flag values must not short-circuit; the legacy native+go.mod path should still run.
+            // Unrecognized flag values must not short-circuit; the legacy native+go.mod path should still run.
+            // "rust" is a recognized native language, so it is covered by InitActionRustTests instead.
             var secretsManager = Substitute.For<ISecretsManager>();
             secretsManager.GetSecrets(Arg.Any<bool>()).Returns(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             {
