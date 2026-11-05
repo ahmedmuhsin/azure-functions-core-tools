@@ -122,6 +122,9 @@ namespace Azure.Functions.Cli.Helpers
                 return true;
             }
 
+            // A Rust app is expected on the Go stack (unverified for Rust, see GetPlatformWorkerRuntime).
+            runtime = WorkerRuntimeLanguageHelper.GetPlatformWorkerRuntime(runtime);
+
             // Test if linux fx version matches any legacy runtime image (e.g. DOCKER|mcr.microsoft.com/azure-functions/dotnet)
             bool isStartingWithDocker = linuxFxVersion.StartsWith("docker|", StringComparison.OrdinalIgnoreCase);
             bool isLegacyImageMatched = false;

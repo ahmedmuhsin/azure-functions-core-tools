@@ -7,6 +7,12 @@
     <EmbeddedResource Include="$(MSBuildThisFileDirectory)go.mod.template">
       <LogicalName>$(AssemblyName).go.mod</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="$(MSBuildThisFileDirectory)main.rs">
+      <LogicalName>$(AssemblyName).main.rs</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="$(MSBuildThisFileDirectory)Cargo.toml.template">
+      <LogicalName>$(AssemblyName).Cargo.toml</LogicalName>
+    </EmbeddedResource>
     <EmbeddedResource Include="$(MSBuildThisFileDirectory)stacks.json">
       <LogicalName>$(AssemblyName).stacks.json</LogicalName>
     </EmbeddedResource>

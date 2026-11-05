@@ -63,6 +63,9 @@ namespace Azure.Functions.Cli.Helpers
                 case WorkerRuntime.Go:
                     searchFiles.Add(GoHelpers.GoModFileName);
                     break;
+                case WorkerRuntime.Rust:
+                    searchFiles.Add(RustHelpers.CargoTomlFileName);
+                    break;
             }
 
             return searchFiles;

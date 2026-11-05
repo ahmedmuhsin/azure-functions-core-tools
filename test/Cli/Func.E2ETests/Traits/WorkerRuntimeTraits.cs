@@ -54,5 +54,10 @@ namespace Azure.Functions.Cli.E2ETests.Traits
         /// Indicates tests that target the Go runtime.
         /// </summary>
         public const string Go = "Go";
+
+        /// <summary>
+        /// Indicates tests that target the Rust runtime.
+        /// </summary>
+        public const string Rust = "Rust";
     }
 }

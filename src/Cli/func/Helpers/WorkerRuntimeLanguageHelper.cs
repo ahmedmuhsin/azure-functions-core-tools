@@ -27,7 +27,9 @@ namespace Azure.Functions.Cli.Helpers
         [DisplayString("custom")]
         Custom,
         [DisplayString("go")]
-        Go
+        Go,
+        [DisplayString("rust")]
+        Rust
     }
 
     public static class WorkerRuntimeLanguageHelper
@@ -39,6 +41,7 @@ namespace Azure.Functions.Cli.Helpers
             { WorkerRuntime.Node, new[] { "js", "javascript", "typescript", "ts" } },
             { WorkerRuntime.Python, new[] { "py" } },
             { WorkerRuntime.Go, new[] { "golang" } },
+            { WorkerRuntime.Rust, new string[] { } },
             { WorkerRuntime.Java, new string[] { } },
             { WorkerRuntime.Powershell, new[] { "pwsh" } },
             { WorkerRuntime.Custom, new string[] { } },
@@ -115,6 +118,8 @@ namespace Azure.Functions.Cli.Helpers
                     return "custom";
                 case WorkerRuntime.Go:
                     return "go";
+                case WorkerRuntime.Rust:
+                    return "rust";
                 default:
                     return "None";
             }
@@ -194,16 +199,16 @@ namespace Azure.Functions.Cli.Helpers
         public static WorkerRuntime GetCurrentWorkerRuntimeLanguage(ISecretsManager secretsManager, bool refreshSecrets = false)
         {
             // FUNCTIONS_CLI_NATIVE_LANGUAGE lets a project declare its native language without
-            // forcing the resolver to scan the working directory for go.mod. Env var wins;
-            // local.settings.json is the secondary source. See TryResolveNativeLanguageAsGo.
-            if (TryResolveNativeLanguageAsGo(secretsManager, refreshSecrets))
+            // forcing the resolver to scan the working directory for go.mod or Cargo.toml. Env var
+            // wins; local.settings.json is the secondary source. See TryResolveNativeLanguage.
+            if (TryResolveNativeLanguage(secretsManager, refreshSecrets, out var nativeRuntime))
             {
                 if (GlobalCoreToolsSettings.IsVerbose)
                 {
-                    ColoredConsole.WriteLine(VerboseColor($"Resolving worker runtime to 'go' ({Constants.FunctionsCliNativeLanguage} is set)."));
+                    ColoredConsole.WriteLine(VerboseColor($"Resolving worker runtime to '{GetRuntimeMoniker(nativeRuntime)}' ({Constants.FunctionsCliNativeLanguage} is set)."));
                 }
 
-                return WorkerRuntime.Go;
+                return nativeRuntime;
             }
 
             string setting = Environment.GetEnvironmentVariable(Constants.FunctionsWorkerRuntime);
@@ -266,8 +271,10 @@ namespace Azure.Functions.Cli.Helpers
         /// Marker -> runtime:
         /// <list type="bullet">
         ///   <item><c>go.mod</c> -> <see cref="WorkerRuntime.Go"/></item>
+        ///   <item><c>Cargo.toml</c> -> <see cref="WorkerRuntime.Rust"/></item>
         /// </list>
-        /// Add new native languages here as they are introduced. Invoked exclusively from
+        /// <c>go.mod</c> is checked first, so an existing Go app that also holds a Rust crate keeps
+        /// resolving to Go. Add new native languages here as they are introduced. Invoked exclusively from
         /// <see cref="GetCurrentWorkerRuntimeLanguage"/> so callers never have to special-case
         /// the "native" literal. Preferred path is the explicit <see cref="Constants.FunctionsCliNativeLanguage"/>
         /// opt-in checked earlier in the resolver; this fallback exists for projects that
@@ -285,20 +292,31 @@ namespace Azure.Functions.Cli.Helpers
                 return WorkerRuntime.Go;
             }
 
+            if (FileSystemHelpers.FileExists(Path.Combine(Environment.CurrentDirectory, RustHelpers.CargoTomlFileName)))
+            {
+                if (GlobalCoreToolsSettings.IsVerbose)
+                {
+                    ColoredConsole.WriteLine(VerboseColor($"Resolving native worker runtime to 'rust' ({RustHelpers.CargoTomlFileName} found; consider setting {Constants.FunctionsCliNativeLanguage}=rust in local.settings.json)."));
+                }
+
+                return WorkerRuntime.Rust;
+            }
+
             throw new CliException(
-                $"FUNCTIONS_WORKER_RUNTIME is set to 'native' but no supported project marker was found in '{Environment.CurrentDirectory}'. " +
-                $"Set '{Constants.FunctionsCliNativeLanguage}=go' in local.settings.json, or run 'func init' to initialize a supported function app in this directory.");
+                $"FUNCTIONS_WORKER_RUNTIME is set to 'native' but no supported project marker ({GoHelpers.GoModFileName} or {RustHelpers.CargoTomlFileName}) was found in '{Environment.CurrentDirectory}'. " +
+                $"Set '{Constants.FunctionsCliNativeLanguage}=go' or '{Constants.FunctionsCliNativeLanguage}=rust' in local.settings.json, or run 'func init' to initialize a supported function app in this directory.");
         }
 
         /// <summary>
-        /// Returns <c>true</c> when FUNCTIONS_CLI_NATIVE_LANGUAGE is set to "go" either in the
-        /// process environment or in <c>local.settings.json</c>. Env var wins; local.settings.json
-        /// access failures (e.g. command run from outside a project root) are treated as "not set".
+        /// Returns <c>true</c> when FUNCTIONS_CLI_NATIVE_LANGUAGE names a supported native language
+        /// ("go" or "rust"), either in the process environment or in <c>local.settings.json</c>.
+        /// Env var wins; an unrecognized env value does not hide a recognized setting.
+        /// local.settings.json access failures (e.g. command run from outside a project root)
+        /// are treated as "not set".
         /// </summary>
-        private static bool TryResolveNativeLanguageAsGo(ISecretsManager secretsManager, bool refreshSecrets = false)
+        private static bool TryResolveNativeLanguage(ISecretsManager secretsManager, bool refreshSecrets, out WorkerRuntime nativeRuntime)
         {
-            var envValue = Environment.GetEnvironmentVariable(Constants.FunctionsCliNativeLanguage);
-            if (!string.IsNullOrEmpty(envValue) && envValue.Equals("go", StringComparison.OrdinalIgnoreCase))
+            if (TryParseNativeLanguage(Environment.GetEnvironmentVariable(Constants.FunctionsCliNativeLanguage), out nativeRuntime))
             {
                 return true;
             }
@@ -318,12 +336,25 @@ namespace Azure.Functions.Cli.Helpers
                 return false;
             }
 
-            if (string.IsNullOrEmpty(fromSettings))
+            return TryParseNativeLanguage(fromSettings, out nativeRuntime);
+        }
+
+        private static bool TryParseNativeLanguage(string value, out WorkerRuntime nativeRuntime)
+        {
+            if (string.Equals(value, "go", StringComparison.OrdinalIgnoreCase))
             {
-                return false;
+                nativeRuntime = WorkerRuntime.Go;
+                return true;
             }
 
-            return fromSettings.Equals("go", StringComparison.OrdinalIgnoreCase);
+            if (string.Equals(value, "rust", StringComparison.OrdinalIgnoreCase))
+            {
+                nativeRuntime = WorkerRuntime.Rust;
+                return true;
+            }
+
+            nativeRuntime = WorkerRuntime.None;
+            return false;
         }
 
         public static string GetDefaultTemplateLanguageFromWorker(WorkerRuntime worker)
@@ -339,6 +370,21 @@ namespace Azure.Functions.Cli.Helpers
         public static bool IsDotnet(WorkerRuntime worker)
         {
             return worker == WorkerRuntime.Dotnet || worker == WorkerRuntime.DotnetIsolated;
+        }
+
+        // Go and Rust both run as native workers: FUNCTIONS_WORKER_RUNTIME=native, the shared
+        // workers/native/worker.config.json, and a compiled executable at bin/app.
+        public static bool IsNative(WorkerRuntime worker)
+        {
+            return worker == WorkerRuntime.Go || worker == WorkerRuntime.Rust;
+        }
+
+        public static WorkerRuntime GetPlatformWorkerRuntime(WorkerRuntime worker)
+        {
+            // The Azure side has no Rust stack. A native app runs on the stack that Go uses, with
+            // FUNCTIONS_WORKER_RUNTIME=native, the Flex runtime name 'go' and LinuxFxVersion 'Go|1.0'.
+            // Unverified for Rust, because no Rust app has been run on Azure yet.
+            return IsNative(worker) ? WorkerRuntime.Go : worker;
         }
 
         public static bool IsDotnetIsolated(WorkerRuntime worker)

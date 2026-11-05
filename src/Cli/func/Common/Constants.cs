@@ -23,8 +23,8 @@ namespace Azure.Functions.Cli.Common
 
         // CLI-only disambiguator for FUNCTIONS_WORKER_RUNTIME=native projects. Read from env
         // first, then local.settings.json (Values). Never sent to the host or to Azure (the CLI
-        // strips local.settings on publish). Today only "go" is recognized; new native languages
-        // (rust, c++, etc.) extend this same value space rather than introducing parallel flags.
+        // strips local.settings on publish). Today "go" and "rust" are recognized; new native languages
+        // (c++, etc.) extend this same value space rather than introducing parallel flags.
         public const string FunctionsCliNativeLanguage = "FUNCTIONS_CLI_NATIVE_LANGUAGE";
         public const string RequirementsTxt = "requirements.txt";
         public const string PythonGettingStarted = "getting_started.md";

@@ -19,6 +19,7 @@ namespace Azure.Functions.Cli.UnitTests.HelperTests
         [InlineData(WorkerRuntime.Python, "function_app.py")]
         [InlineData(WorkerRuntime.Node, "package.json")]
         [InlineData(WorkerRuntime.Go, "go.mod")]
+        [InlineData(WorkerRuntime.Rust, "Cargo.toml")]
         public void GetFunctionAppRootDirectory_DetectsRoot_ByRuntimeMarker_WithoutHostJson(WorkerRuntime workerRuntime, string marker)
         {
             // Arrange
@@ -43,6 +44,7 @@ namespace Azure.Functions.Cli.UnitTests.HelperTests
         [InlineData(WorkerRuntime.Python, "function_app.py")]
         [InlineData(WorkerRuntime.Node, "package.json")]
         [InlineData(WorkerRuntime.Go, "go.mod")]
+        [InlineData(WorkerRuntime.Rust, "Cargo.toml")]
         public void GetProjectRootSearchFiles_IncludesCommonMarkers_AndRuntimeMarker(WorkerRuntime workerRuntime, string runtimeMarker)
         {
             // Act

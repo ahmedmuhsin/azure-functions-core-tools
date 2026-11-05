@@ -94,6 +94,10 @@ namespace Azure.Functions.Cli
 
         public static Task<string> GoMod => GetValue("go.mod");
 
+        public static Task<string> MainRs => GetValue("main.rs");
+
+        public static Task<string> CargoToml => GetValue("Cargo.toml");
+
         public static Task<string> PackageJsonJsV4 => GetValue("package-js-v4.json");
 
         public static Task<string> PackageJsonJs => GetValue("package-js.json");

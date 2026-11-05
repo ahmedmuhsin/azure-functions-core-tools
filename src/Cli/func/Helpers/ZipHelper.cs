@@ -40,12 +40,12 @@ namespace Azure.Functions.Cli.Helpers
                 // Remote build for dotnet does not require bin and obj folders. They will be generated during the oryx build
                 return await CreateZip(FileSystemHelpers.GetLocalFiles(functionAppRoot, ignoreParser, false, new string[] { "bin", "obj" }), functionAppRoot, Array.Empty<string>());
             }
-            else if (workerRuntime == WorkerRuntime.Go)
+            else if (WorkerRuntimeLanguageHelper.IsNative(workerRuntime))
             {
-                // Go deploys an explicit allowlist: host.json + the cross-compiled binary.
+                // Native apps (Go and Rust) deploy an explicit allowlist: host.json + the Linux binary.
                 // The binary lives under bin/ locally (for .gitignore) but must appear at
                 // the zip root as 'app' because the Azure host expects it there.
-                return CreateGoZipPackage(functionAppRoot);
+                return CreateNativeZipPackage(functionAppRoot);
             }
             else
             {
@@ -106,11 +106,11 @@ namespace Azure.Functions.Cli.Helpers
         }
 
         /// <summary>
-        /// Creates a zip for Go deployments where the binary is placed at the zip root
+        /// Creates a zip for native (Go and Rust) deployments where the binary is placed at the zip root
         /// (not under <c>bin/</c>) because the Azure host expects <c>app</c> at the root.
         /// Locally the binary is built to <c>bin/app</c> for .gitignore convenience.
         /// </summary>
-        private static Stream CreateGoZipPackage(string functionAppRoot)
+        private static Stream CreateNativeZipPackage(string functionAppRoot)
         {
             const byte CreatedByUnix = 3;
             const uint centralDirectorySignature = 0x02014B50;
@@ -119,7 +119,7 @@ namespace Azure.Functions.Cli.Helpers
             int unixReadWritePermissions = Convert.ToInt32("100666", 8) << 16;
 
             var hostJsonPath = Path.Combine(functionAppRoot, Constants.HostJsonFileName);
-            var binaryPath = Path.Combine(functionAppRoot, GoHelpers.GoBinDir, GoHelpers.GoBinaryName);
+            var binaryPath = Path.Combine(functionAppRoot, NativeWorkerHelpers.BinDirectoryName, NativeWorkerHelpers.BinaryName);
 
             var memStream = new MemoryStream();
 
@@ -133,7 +133,7 @@ namespace Azure.Functions.Cli.Helpers
                 }
 
                 // Place binary at root as 'app', not 'bin/app'
-                var appEntry = zip.CreateEntryFromFile(binaryPath, GoHelpers.GoBinaryName);
+                var appEntry = zip.CreateEntryFromFile(binaryPath, NativeWorkerHelpers.BinaryName);
                 appEntry.ExternalAttributes = unixExecutablePermissions;
             }
 

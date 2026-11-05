@@ -302,6 +302,46 @@ namespace Azure.Functions.Cli.UnitTests.HelperTests
         }
 
         [Fact]
+        public void AssertLinuxAmd64Binary_KeepsTheGoMessagesWordForWord()
+        {
+            // The check is shared with Rust. These are the Go messages as they were before it was shared.
+            var dir = Path.Combine(Path.GetTempPath(), "func-go-elf-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(Path.Combine(dir, GoHelpers.GoBinDir));
+            try
+            {
+                var displayPath = Path.Combine(GoHelpers.GoBinDir, GoHelpers.GoBinaryName);
+                var binaryPath = Path.Combine(dir, displayPath);
+                var manualBuild = $"'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o {displayPath} .'";
+                var targetNote = "Core Tools currently only supports linux/amd64 Go targets.";
+                var rebuildHint = $"Re-run 'func pack' without '--no-build', or build with {manualBuild}";
+
+                MessageOfAssertLinuxAmd64Binary(dir).Should().Be(
+                    $"Could not find a built Go binary '{displayPath}' in '{dir}'. " +
+                    $"Run 'func pack' without '--no-build' to cross-compile, or run {manualBuild} manually.");
+
+                File.WriteAllBytes(binaryPath, new byte[10]);
+                MessageOfAssertLinuxAmd64Binary(dir).Should().Be(
+                    $"'{binaryPath}' is too small to be an ELF binary. " +
+                    "Re-run 'func pack' without '--no-build' to produce a linux/amd64 binary.");
+
+                File.WriteAllBytes(binaryPath, new byte[32]);
+                MessageOfAssertLinuxAmd64Binary(dir).Should().Be($"'{binaryPath}' is not an ELF binary. {targetNote} {rebuildHint}");
+
+                var elf32 = BuildElfHeader(machine: 0x3E);
+                elf32[4] = 1;
+                File.WriteAllBytes(binaryPath, elf32);
+                MessageOfAssertLinuxAmd64Binary(dir).Should().Be($"'{binaryPath}' is not a 64-bit little-endian ELF binary. {targetNote} {rebuildHint}");
+
+                File.WriteAllBytes(binaryPath, BuildElfHeader(machine: 0xB7));
+                MessageOfAssertLinuxAmd64Binary(dir).Should().Be($"'{binaryPath}' targets machine 0x00B7, not x86_64. {targetNote} {rebuildHint}");
+            }
+            finally
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+        }
+
+        [Fact]
         public void GetPackFiles_WhenHostJsonExists_ReturnsHostJsonAndAppBinary()
         {
             var root = Path.Combine(Path.GetTempPath(), "func-go-files-" + Guid.NewGuid().ToString("N"));
@@ -332,6 +372,12 @@ namespace Azure.Functions.Cli.UnitTests.HelperTests
 
             files.Should().ContainSingle()
                 .Which.Should().Be(Path.Combine(root, GoHelpers.GoBinDir, GoHelpers.GoBinaryName));
+        }
+
+        private static string MessageOfAssertLinuxAmd64Binary(string workingDirectory)
+        {
+            var action = () => GoHelpers.AssertLinuxAmd64Binary(workingDirectory);
+            return action.Should().Throw<CliException>().Which.Message;
         }
 
         // Builds a minimal 20-byte ELF identification region with EI_CLASS=64-bit, EI_DATA=little-endian

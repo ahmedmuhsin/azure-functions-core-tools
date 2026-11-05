@@ -1,7 +1,6 @@
 // Copyright (c) .NET Foundation. All rights reserved.
 // Licensed under the MIT License. See LICENSE in the project root for license information.
 
-using System.Diagnostics;
 using System.Text;
 using System.Text.RegularExpressions;
 using Azure.Functions.Cli.Actions.LocalActions.PackAction;
@@ -15,16 +14,18 @@ namespace Azure.Functions.Cli.Helpers
     {
         private const int MinimumGoMajorVersion = 1;
         private const int MinimumGoMinorVersion = 24;
-        private const int GoVersionTimeoutMs = 5000;
-        internal const string GoBinaryName = "app";
-        internal const string GoBinDir = "bin";
+        internal const string GoBinaryName = NativeWorkerHelpers.BinaryName;
+        internal const string GoBinDir = NativeWorkerHelpers.BinDirectoryName;
         internal const string GoModFileName = "go.mod";
 
-        internal static string LocalBinaryPath => Path.Combine(GoBinDir, OperatingSystem.IsWindows() ? $"{GoBinaryName}.exe" : GoBinaryName);
+        private static readonly Regex _goVersionPattern = new Regex(@"go(\d+\.\d+(?:\.\d+)?)", RegexOptions.Compiled);
+
+        internal static string LocalBinaryPath => NativeWorkerHelpers.LocalBinaryPath;
 
         public static async Task<WorkerLanguageVersionInfo> GetEnvironmentGoVersion()
         {
-            return await GetVersion("go");
+            // Parses the "go version go1.24.2 linux/amd64" format.
+            return await NativeWorkerHelpers.GetToolVersion(WorkerRuntime.Go, "Go", "go", "version", _goVersionPattern);
         }
 
         public static void AssertGoVersion(WorkerLanguageVersionInfo goVersion)
@@ -209,82 +210,12 @@ namespace Azure.Functions.Cli.Helpers
         /// </summary>
         internal static void AssertLinuxAmd64Binary(string workingDirectory = null)
         {
-            workingDirectory ??= Environment.CurrentDirectory;
-            var binaryPath = Path.Combine(workingDirectory, GoBinDir, GoBinaryName);
             var displayPath = Path.Combine(GoBinDir, GoBinaryName);
-
-            void ValidateBinaryExists()
-            {
-                if (!FileSystemHelpers.FileExists(binaryPath))
-                {
-                    throw new CliException(
-                        $"Could not find a built Go binary '{displayPath}' in '{workingDirectory}'. " +
-                        $"Run 'func pack' without '--no-build' to cross-compile, or run " +
-                        $"'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o {displayPath} .' manually.");
-                }
-            }
-
-            byte[] ReadElfHeader()
-            {
-                // Read the first 20 bytes of the ELF header so we can validate magic, class, data, and machine.
-                // Layout reference: https://refspecs.linuxfoundation.org/elf/gabi4+/ch4.eheader.html
-                var header = new byte[20];
-                using (var fs = new FileStream(binaryPath, FileMode.Open, FileAccess.Read))
-                {
-                    int read = fs.Read(header, 0, header.Length);
-                    if (read < header.Length)
-                    {
-                        throw new CliException(
-                            $"'{binaryPath}' is too small to be an ELF binary. " +
-                            "Re-run 'func pack' without '--no-build' to produce a linux/amd64 binary.");
-                    }
-                }
-
-                return header;
-            }
-
-            // ELF magic is the file signature that identifies an ELF (Executable and Linkable Format) binary
-            void ValidateElfMagic(byte[] header)
-            {
-                // ELF magic: 0x7F 'E' 'L' 'F'
-                bool isElf = header[0] == 0x7F && header[1] == (byte)'E' && header[2] == (byte)'L' && header[3] == (byte)'F';
-                if (!isElf)
-                {
-                    throw new CliException(
-                        $"'{binaryPath}' is not an ELF binary. Core Tools currently only supports linux/amd64 Go targets. " +
-                        $"Re-run 'func pack' without '--no-build', or build with 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o {displayPath} .'");
-                }
-            }
-
-            void ValidateElfFormat(byte[] header)
-            {
-                // EI_CLASS == 2 (64-bit), EI_DATA == 1 (little endian)
-                if (header[4] != 2 || header[5] != 1)
-                {
-                    throw new CliException(
-                        $"'{binaryPath}' is not a 64-bit little-endian ELF binary. Core Tools currently only supports linux/amd64 Go targets. " +
-                        $"Re-run 'func pack' without '--no-build', or build with 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o {displayPath} .'");
-                }
-            }
-
-            void ValidateElfMachine(byte[] header)
-            {
-                // e_machine is at offset 18, 2 bytes little-endian. 0x3E == EM_X86_64.
-                ushort eMachine = (ushort)(header[18] | (header[19] << 8));
-                if (eMachine != 0x3E)
-                {
-                    throw new CliException(
-                        $"'{binaryPath}' targets machine 0x{eMachine:X4}, not x86_64. Core Tools currently only supports linux/amd64 Go targets. " +
-                        $"Re-run 'func pack' without '--no-build', or build with 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o {displayPath} .'");
-                }
-            }
-
-            // Execute validations in order
-            ValidateBinaryExists();
-            var header = ReadElfHeader();
-            ValidateElfMagic(header);
-            ValidateElfFormat(header);
-            ValidateElfMachine(header);
+            NativeWorkerHelpers.AssertLinuxAmd64Binary(
+                workingDirectory,
+                "Go",
+                "Core Tools currently only supports linux/amd64 Go targets.",
+                $"'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o {displayPath} .'");
         }
 
         /// <summary>
@@ -294,16 +225,7 @@ namespace Azure.Functions.Cli.Helpers
         /// </summary>
         internal static IEnumerable<string> GetPackFiles(string functionAppRoot)
         {
-            functionAppRoot ??= Environment.CurrentDirectory;
-
-            // host.json is optional; only include it in the allowlist when it exists.
-            var hostJsonPath = Path.Combine(functionAppRoot, Constants.HostJsonFileName);
-            if (FileSystemHelpers.FileExists(hostJsonPath))
-            {
-                yield return hostJsonPath;
-            }
-
-            yield return Path.Combine(functionAppRoot, GoBinDir, GoBinaryName);
+            return NativeWorkerHelpers.GetPackFiles(functionAppRoot);
         }
 
         /// <summary>
@@ -360,71 +282,6 @@ namespace Azure.Functions.Cli.Helpers
                     ColoredConsole.WriteLine(WarningColor(stderrOutput));
                 }
             }
-        }
-
-        private static Task<WorkerLanguageVersionInfo> GetVersion(string goExe)
-        {
-            // Synchronous Process I/O for reliability — async I/O (ReadToEndAsync /
-            // WaitForExitAsync) intermittently returned null on Linux CI agents for
-            // sub-second commands like 'go version', producing confusing
-            // "Could not find a Go installation" errors. Surface failure reasons to
-            // stderr rather than returning null silently so CI logs are diagnosable.
-            void Warn(string message) => ColoredConsole.Error.WriteLine(WarningColor($"Warning: {message}"));
-
-            try
-            {
-                using var process = new Process
-                {
-                    StartInfo = new ProcessStartInfo
-                    {
-                        FileName = goExe,
-                        Arguments = "version",
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true,
-                        UseShellExecute = false,
-                        CreateNoWindow = true,
-                    },
-                };
-
-                process.Start();
-                string output = process.StandardOutput.ReadToEnd().Trim();
-
-                if (!process.WaitForExit(GoVersionTimeoutMs))
-                {
-                    try
-                    {
-                        process.Kill();
-                    }
-                    catch (InvalidOperationException)
-                    {
-                        // Process exited between WaitForExit returning and Kill — benign.
-                    }
-
-                    Warn($"'{goExe} version' did not complete within {GoVersionTimeoutMs}ms.");
-                    return Task.FromResult<WorkerLanguageVersionInfo>(null);
-                }
-
-                if (process.ExitCode != 0)
-                {
-                    Warn($"'{goExe} version' exited with code {process.ExitCode}.");
-                    return Task.FromResult<WorkerLanguageVersionInfo>(null);
-                }
-
-                // Parse "go version go1.24.2 linux/amd64" format.
-                var match = Regex.Match(output, @"go(\d+\.\d+(?:\.\d+)?)");
-                if (match.Success)
-                {
-                    return Task.FromResult(new WorkerLanguageVersionInfo(WorkerRuntime.Go, match.Groups[1].Value, goExe));
-                }
-
-                Warn($"'{goExe} version' returned unparseable output: '{output}'.");
-            }
-            catch (Exception ex)
-            {
-                Warn($"unable to detect Go version: {ex.GetType().Name}: {ex.Message}");
-            }
-
-            return Task.FromResult<WorkerLanguageVersionInfo>(null);
         }
     }
 }

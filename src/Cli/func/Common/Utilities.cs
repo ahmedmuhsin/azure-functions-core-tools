@@ -24,6 +24,7 @@ namespace Azure.Functions.Cli
     {
         public const string LogLevelSection = "loglevel";
         public const string LogLevelDefaultSection = "Default";
+        internal const string RustPreviewWarning = "Rust support is in preview. Build and publish behavior may change.";
 
         internal static void PrintLogo()
         {
@@ -73,6 +74,18 @@ namespace Azure.Functions.Cli
 
             ColoredConsole
                 .WriteLine("Go is generally available on Flex Consumption. Support on Elastic Premium and Dedicated Linux plans is in preview, and build/publish behavior may change before GA.".DarkYellow());
+
+            ColoredConsole.WriteLine();
+        }
+
+        internal static void WarnIfRustWorkerRuntime(Helpers.WorkerRuntime workerRuntime)
+        {
+            if (workerRuntime != Helpers.WorkerRuntime.Rust)
+            {
+                return;
+            }
+
+            ColoredConsole.WriteLine(RustPreviewWarning.DarkYellow());
 
             ColoredConsole.WriteLine();
         }

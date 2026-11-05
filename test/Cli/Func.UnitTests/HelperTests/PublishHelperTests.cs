@@ -25,7 +25,15 @@ namespace Azure.Functions.Cli.UnitTests.HelperTests
         [InlineData("DOCKER|customimage", WorkerRuntime.Dotnet, false)]
         [InlineData("PYTHON|3.7", WorkerRuntime.Python, true)]
         [InlineData("PYTHON|3.7", WorkerRuntime.Node, false)]
+        [InlineData("Go|1.0", WorkerRuntime.Go, true)]
+        [InlineData("Go|1.0", WorkerRuntime.Rust, true)]
+        [InlineData("go|1.0", WorkerRuntime.Rust, true)]
+        [InlineData("Go|1.0", WorkerRuntime.Python, false)]
+        [InlineData("Go|1.0", WorkerRuntime.Dotnet, false)]
+        [InlineData("PYTHON|3.7", WorkerRuntime.Rust, false)]
+        [InlineData("Node|22", WorkerRuntime.Rust, false)]
         [InlineData("", WorkerRuntime.Dotnet, true)]
+        [InlineData("", WorkerRuntime.Rust, true)]
         public void IsLinuxFxVersionRuntimeMatchedTest(string linuxFxVersion, WorkerRuntime runtime, bool expected)
         {
             Assert.Equal(expected, PublishHelper.IsLinuxFxVersionRuntimeMatched(linuxFxVersion, runtime));

@@ -16,6 +16,7 @@ namespace Azure.Functions.Cli.Helpers
             { WorkerRuntime.Dotnet, string.Empty },
             { WorkerRuntime.Custom, string.Empty },
             { WorkerRuntime.Go, string.Empty },
+            { WorkerRuntime.Rust, string.Empty },
             { WorkerRuntime.None, string.Empty }
         }
         .Select(p => RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
