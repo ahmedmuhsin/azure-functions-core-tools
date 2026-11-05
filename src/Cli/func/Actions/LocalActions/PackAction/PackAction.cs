@@ -92,6 +92,7 @@ namespace Azure.Functions.Cli.Actions.LocalActions.PackAction
             WorkerRuntime workerRuntime = WorkerRuntimeLanguageHelper.GetCurrentWorkerRuntimeLanguage(_secretsManager, refreshSecrets: true);
 
             Utilities.WarnIfGoWorkerRuntime(workerRuntime);
+            Utilities.WarnIfRustWorkerRuntime(workerRuntime);
 
             if (workerRuntime == WorkerRuntime.None && NoBuild)
             {
@@ -135,6 +136,7 @@ namespace Azure.Functions.Cli.Actions.LocalActions.PackAction
                 WorkerRuntime.Powershell => new PowershellPackSubcommandAction().RunAsync(packOptions),
                 WorkerRuntime.Custom => new CustomPackSubcommandAction().RunAsync(packOptions),
                 WorkerRuntime.Go => new GoPackSubcommandAction().RunAsync(packOptions),
+                WorkerRuntime.Rust => new RustPackSubcommandAction().RunAsync(packOptions),
                 _ => throw new CliException($"Unsupported runtime: {runtime}")
             });
     }

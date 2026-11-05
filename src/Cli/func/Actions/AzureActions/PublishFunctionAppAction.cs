@@ -179,12 +179,13 @@ namespace Azure.Functions.Cli.Actions.AzureActions
             }
 
             Utilities.WarnIfGoWorkerRuntime(workerRuntime);
+            Utilities.WarnIfRustWorkerRuntime(workerRuntime);
 
-            // Go is cross-compiled to linux/amd64. Reject unsupported hosting plans and
-            // build modes up front; supported Linux plans use the same local Go artifact.
-            if (workerRuntime == WorkerRuntime.Go)
+            // Native apps are cross-compiled to x86_64 Linux. Reject unsupported hosting plans and
+            // build modes up front; supported Linux plans use the same local binary.
+            if (WorkerRuntimeLanguageHelper.IsNative(workerRuntime))
             {
-                ValidateGoPublishOptions(functionApp, PublishBuildOption, BuildNativeDeps);
+                ValidateNativePublishOptions(functionApp, PublishBuildOption, BuildNativeDeps, workerRuntime);
             }
 
             // Get the GitIgnoreParser from the functionApp root
@@ -240,30 +241,7 @@ namespace Azure.Functions.Cli.Actions.AzureActions
 
             bool isNonCsxDotnetRuntime = WorkerRuntimeLanguageHelper.IsDotnet(workerRuntime) && !Csx;
 
-            if (isNonCsxDotnetRuntime && !NoBuild && PublishBuildOption != BuildOption.Remote)
-            {
-                await DotnetHelpers.BuildAndChangeDirectory(Path.Combine("bin", "publish"), DotnetCliParameters);
-            }
-            else if (workerRuntime == WorkerRuntime.Go &&
-                     PublishBuildOption != BuildOption.Remote &&
-                     PublishBuildOption != BuildOption.Container)
-            {
-                // Go always builds locally — there is no remote/container path for Go publishes.
-                // The remote/container conditions are redundant given the up-front rejection above;
-                // keeping them documents intent and stays defensive against future changes to ResolveBuildOption.
-                GoHelpers.AssertGoFunctionAppLayout(functionAppRoot);
-
-                if (NoBuild)
-                {
-                    // Trust the user's pre-built binary, but verify it is actually a linux/amd64 ELF
-                    // so we don't silently upload a host-OS binary to a Linux Flex host.
-                    GoHelpers.AssertLinuxAmd64Binary(functionAppRoot);
-                }
-                else
-                {
-                    await GoHelpers.BuildForLinux(functionAppRoot);
-                }
-            }
+            await BuildForPublish(workerRuntime, functionAppRoot, isNonCsxDotnetRuntime);
 
             if (!isNonCsxDotnetRuntime)
             {
@@ -307,7 +285,45 @@ namespace Azure.Functions.Cli.Actions.AzureActions
             }
         }
 
-        private async Task<IDictionary<string, string>> ValidateFunctionAppPublish(Site functionApp, WorkerRuntime workerRuntime, string functionAppRoot, bool skipRuntimeUpdate = false)
+        // The local build step of a publish. .NET publishes into bin/publish. Go and Rust build their Linux binary,
+        // or check the one that was built already when --no-build is given.
+        internal async Task BuildForPublish(WorkerRuntime workerRuntime, string functionAppRoot, bool isNonCsxDotnetRuntime)
+        {
+            if (isNonCsxDotnetRuntime && !NoBuild && PublishBuildOption != BuildOption.Remote)
+            {
+                await DotnetHelpers.BuildAndChangeDirectory(Path.Combine("bin", "publish"), DotnetCliParameters);
+            }
+            else if (workerRuntime == WorkerRuntime.Go &&
+                     PublishBuildOption != BuildOption.Remote &&
+                     PublishBuildOption != BuildOption.Container)
+            {
+                // Go always builds locally — there is no remote/container path for Go publishes.
+                // The remote/container conditions are redundant given the up-front rejection above;
+                // keeping them documents intent and stays defensive against future changes to ResolveBuildOption.
+                GoHelpers.AssertGoFunctionAppLayout(functionAppRoot);
+
+                if (NoBuild)
+                {
+                    // Trust the user's pre-built binary, but verify it is actually a linux/amd64 ELF
+                    // so we don't silently upload a host-OS binary to a Linux Flex host.
+                    GoHelpers.AssertLinuxAmd64Binary(functionAppRoot);
+                }
+                else
+                {
+                    await GoHelpers.BuildForLinux(functionAppRoot);
+                }
+            }
+            else if (workerRuntime == WorkerRuntime.Rust &&
+                     PublishBuildOption != BuildOption.Remote &&
+                     PublishBuildOption != BuildOption.Container)
+            {
+                // Rust always builds locally. The remote and container conditions are
+                // already rejected above and are kept to document intent.
+                await RustHelpers.PrepareForPublish(functionAppRoot, NoBuild);
+            }
+        }
+
+        internal async Task<IDictionary<string, string>> ValidateFunctionAppPublish(Site functionApp, WorkerRuntime workerRuntime, string functionAppRoot, bool skipRuntimeUpdate = false)
         {
             var result = new Dictionary<string, string>();
 
@@ -349,9 +365,7 @@ namespace Azure.Functions.Cli.Actions.AzureActions
             if ((functionApp.IsFlex && !string.IsNullOrEmpty(workerRuntimeStr)) ||
                 (!functionApp.IsFlex && functionApp.AzureAppSettings.TryGetValue(Constants.FunctionsWorkerRuntime, out workerRuntimeStr)))
             {
-                string expectedWorkerRuntimeSetting = functionApp.IsFlex
-                    ? WorkerRuntimeLanguageHelper.GetRuntimeMoniker(workerRuntime)
-                    : GetFunctionAppWorkerRuntimeSetting(workerRuntime);
+                string expectedWorkerRuntimeSetting = GetExpectedFunctionAppWorkerRuntime(functionApp.IsFlex, workerRuntime);
                 var resolution = $"You can pass --force to update your Azure app with '{expectedWorkerRuntimeSetting}' as a '{Constants.FunctionsWorkerRuntime}'";
                 try
                 {
@@ -453,44 +467,77 @@ namespace Azure.Functions.Cli.Actions.AzureActions
 
         internal static void ValidateGoPublishOptions(Site functionApp, BuildOption publishBuildOption, bool buildNativeDeps)
         {
+            ValidateNativePublishOptions(functionApp, publishBuildOption, buildNativeDeps, WorkerRuntime.Go);
+        }
+
+        internal static void ValidateRustPublishOptions(Site functionApp, BuildOption publishBuildOption, bool buildNativeDeps)
+        {
+            ValidateNativePublishOptions(functionApp, publishBuildOption, buildNativeDeps, WorkerRuntime.Rust);
+        }
+
+        // Native apps are compiled for Linux on the developer machine and uploaded as a binary.
+        // The language name is the name of the WorkerRuntime ('Go' or 'Rust'). The Rust
+        // texts say only what Core Tools rejects, because Rust is a preview that has not run on Azure,
+        // so they do not claim support and do not name a hosting plan.
+        internal static void ValidateNativePublishOptions(Site functionApp, BuildOption publishBuildOption, bool buildNativeDeps, WorkerRuntime language)
+        {
+            bool isRust = language == WorkerRuntime.Rust;
+
             if (!functionApp.IsLinux)
             {
-                throw new CliException("Go is only supported for Linux Function Apps.");
+                throw new CliException(isRust
+                    ? "Rust apps can only be published to Linux Function Apps."
+                    : $"{language} is only supported for Linux Function Apps.");
             }
 
             if (functionApp.IsDynamic)
             {
-                throw new CliException(
-                    "Go is not supported on Linux Consumption Function Apps. Use Flex Consumption, Elastic Premium, or a Dedicated Linux plan.");
+                throw new CliException(isRust
+                    ? "Rust apps cannot be published to Linux Consumption Function Apps."
+                    : $"{language} is not supported on Linux Consumption Function Apps. Use Flex Consumption, Elastic Premium, or a Dedicated Linux plan.");
             }
 
             if (publishBuildOption == BuildOption.Remote || publishBuildOption == BuildOption.Container)
             {
                 throw new CliException(
-                    $"--build {publishBuildOption} is not supported for Go. Run 'func publish' without '--build {publishBuildOption}'.");
+                    $"--build {publishBuildOption} is not supported for {language}. Run 'func publish' without '--build {publishBuildOption}'.");
             }
 
             // ResolveBuildOption flips the build option to Container when --build-native-deps is
-            // set, which would bypass the Go build branch and could publish a stale or missing binary.
+            // set, which would bypass the native build branch and could publish a stale or missing binary.
             if (buildNativeDeps)
             {
-                throw new CliException("--build-native-deps is not supported for Go. Run 'func publish' without '--build-native-deps'.");
+                throw new CliException($"--build-native-deps is not supported for {language}. Run 'func publish' without '--build-native-deps'.");
             }
         }
 
+        // The setting or runtime name that the app has in Azure for this local project.
+        internal static string GetExpectedFunctionAppWorkerRuntime(bool isFlex, WorkerRuntime workerRuntime)
+            => isFlex
+                ? WorkerRuntimeLanguageHelper.GetRuntimeMoniker(WorkerRuntimeLanguageHelper.GetPlatformWorkerRuntime(workerRuntime))
+                : GetFunctionAppWorkerRuntimeSetting(workerRuntime);
+
         internal static WorkerRuntime NormalizeFunctionAppWorkerRuntime(string workerRuntime, WorkerRuntime localWorkerRuntime)
         {
-            if (localWorkerRuntime == WorkerRuntime.Go &&
+            if (WorkerRuntimeLanguageHelper.IsNative(localWorkerRuntime) &&
                 string.Equals(workerRuntime, "native", StringComparison.OrdinalIgnoreCase))
             {
-                return WorkerRuntime.Go;
+                return localWorkerRuntime;
+            }
+
+            // A Rust app is expected on the Go stack, so an app that Flex names 'go' matches it
+            // (unverified for Rust, see GetPlatformWorkerRuntime).
+            if (localWorkerRuntime == WorkerRuntime.Rust &&
+                string.Equals(workerRuntime, WorkerRuntimeLanguageHelper.GetRuntimeMoniker(WorkerRuntime.Go), StringComparison.OrdinalIgnoreCase))
+            {
+                return WorkerRuntime.Rust;
             }
 
             return WorkerRuntimeLanguageHelper.NormalizeWorkerRuntime(workerRuntime);
         }
 
         internal static string GetFunctionAppWorkerRuntimeSetting(WorkerRuntime workerRuntime)
-            => workerRuntime == WorkerRuntime.Go
+            => WorkerRuntimeLanguageHelper.IsNative(workerRuntime)
                 ? "native"
                 : WorkerRuntimeLanguageHelper.GetRuntimeMoniker(workerRuntime);
 
@@ -622,6 +669,9 @@ namespace Azure.Functions.Cli.Actions.AzureActions
 
         internal static string GetLinuxFxVersionForWorkerRuntime(WorkerRuntime workerRuntime)
         {
+            // A Rust app is expected on the Go stack (unverified for Rust, see GetPlatformWorkerRuntime).
+            workerRuntime = WorkerRuntimeLanguageHelper.GetPlatformWorkerRuntime(workerRuntime);
+
             if (workerRuntime == WorkerRuntime.Go)
             {
                 return "Go|1.0";
@@ -1408,12 +1458,13 @@ namespace Azure.Functions.Cli.Actions.AzureActions
                 displayError: true);
         }
 
-        private static void InternalListIgnoredFiles(GitIgnoreParser ignoreParser)
+        internal static void InternalListIgnoredFiles(GitIgnoreParser ignoreParser)
         {
-            if (GlobalCoreToolsSettings.CurrentWorkerRuntime == WorkerRuntime.Go)
+            var workerRuntime = GlobalCoreToolsSettings.CurrentWorkerRuntime;
+            if (WorkerRuntimeLanguageHelper.IsNative(workerRuntime))
             {
-                // Go uses an explicit allowlist (see GoHelpers.GetPackFiles); funcignore is not consulted.
-                ColoredConsole.WriteLine($"Go publishes only {Constants.HostJsonFileName} and {GoHelpers.GoBinaryName}; all other files are excluded.");
+                // Native apps use an explicit allowlist (see NativeWorkerHelpers.GetPackFiles); funcignore is not consulted.
+                ColoredConsole.WriteLine($"{workerRuntime} publishes only {Constants.HostJsonFileName} and {NativeWorkerHelpers.BinaryName}; all other files are excluded.");
                 return;
             }
 
@@ -1429,17 +1480,17 @@ namespace Azure.Functions.Cli.Actions.AzureActions
             }
         }
 
-        private static void InternalListIncludedFiles(GitIgnoreParser ignoreParser)
+        internal static void InternalListIncludedFiles(GitIgnoreParser ignoreParser)
         {
-            if (GlobalCoreToolsSettings.CurrentWorkerRuntime == WorkerRuntime.Go)
+            if (WorkerRuntimeLanguageHelper.IsNative(GlobalCoreToolsSettings.CurrentWorkerRuntime))
             {
-                // Go zip is built from the explicit allowlist in GoHelpers.GetPackFiles; print those
+                // The native zip is built from the explicit allowlist in NativeWorkerHelpers.GetPackFiles; print those
                 // files rooted at the function app root so output matches what is actually packaged
-                // even when 'func publish' is run from a subdirectory. The Go binary ('app') may
+                // even when 'func publish' is run from a subdirectory. The binary ('app') may
                 // not exist yet when --list-included-files is run before a build, so annotate it
                 // rather than printing a misleading path that doesn't exist on disk.
                 var functionAppRoot = ScriptHostHelpers.GetFunctionAppRootDirectory(Environment.CurrentDirectory, ScriptHostHelpers.GetProjectRootSearchFiles(GlobalCoreToolsSettings.CurrentWorkerRuntime));
-                foreach (var file in GoHelpers.GetPackFiles(functionAppRoot))
+                foreach (var file in NativeWorkerHelpers.GetPackFiles(functionAppRoot))
                 {
                     if (FileSystemHelpers.FileExists(file))
                     {

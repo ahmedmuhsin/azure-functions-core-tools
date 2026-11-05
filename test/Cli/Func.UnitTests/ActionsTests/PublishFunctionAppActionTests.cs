@@ -121,6 +121,227 @@ namespace Azure.Functions.Cli.UnitTests.ActionsTests
         }
 
         [Theory]
+        [InlineData("flexconsumption")]
+        [InlineData("elasticpremium")]
+        [InlineData("premium")]
+        public void ValidateRustPublishOptions_LinuxHostingSku_DoesNotThrow(string sku)
+        {
+            var site = new Site("test-site")
+            {
+                Kind = "functionapp,linux",
+                Sku = sku
+            };
+
+            var exception = Record.Exception(
+                () => PublishFunctionAppAction.ValidateRustPublishOptions(site, BuildOption.Default, buildNativeDeps: false));
+
+            Assert.Null(exception);
+        }
+
+        [Fact]
+        public void ValidateRustPublishOptions_LinuxConsumption_Throws()
+        {
+            var site = new Site("test-site")
+            {
+                Kind = "functionapp,linux",
+                Sku = "dynamic"
+            };
+
+            var exception = Assert.Throws<CliException>(
+                () => PublishFunctionAppAction.ValidateRustPublishOptions(site, BuildOption.Default, buildNativeDeps: false));
+
+            Assert.Equal("Rust apps cannot be published to Linux Consumption Function Apps.", exception.Message);
+        }
+
+        [Fact]
+        public void ValidateRustPublishOptions_WindowsApp_Throws()
+        {
+            var site = new Site("test-site")
+            {
+                Kind = "functionapp",
+                Sku = "premium"
+            };
+
+            var exception = Assert.Throws<CliException>(
+                () => PublishFunctionAppAction.ValidateRustPublishOptions(site, BuildOption.Default, buildNativeDeps: false));
+
+            Assert.Equal("Rust apps can only be published to Linux Function Apps.", exception.Message);
+        }
+
+        [Theory]
+        [InlineData(BuildOption.Remote)]
+        [InlineData(BuildOption.Container)]
+        public void ValidateRustPublishOptions_UnsupportedBuildMode_Throws(BuildOption buildOption)
+        {
+            var site = new Site("test-site")
+            {
+                Kind = "functionapp,linux",
+                Sku = "premium"
+            };
+
+            var exception = Assert.Throws<CliException>(
+                () => PublishFunctionAppAction.ValidateRustPublishOptions(site, buildOption, buildNativeDeps: false));
+
+            Assert.Equal($"--build {buildOption} is not supported for Rust. Run 'func publish' without '--build {buildOption}'.", exception.Message);
+        }
+
+        [Fact]
+        public void ValidateRustPublishOptions_BuildNativeDeps_Throws()
+        {
+            var site = new Site("test-site")
+            {
+                Kind = "functionapp,linux",
+                Sku = "premium"
+            };
+
+            var exception = Assert.Throws<CliException>(
+                () => PublishFunctionAppAction.ValidateRustPublishOptions(site, BuildOption.Default, buildNativeDeps: true));
+
+            Assert.Equal("--build-native-deps is not supported for Rust. Run 'func publish' without '--build-native-deps'.", exception.Message);
+        }
+
+        [Fact]
+        public void ValidateGoPublishOptions_BuildNativeDeps_Throws()
+        {
+            // The Go checks share code with Rust, so pin that the Go text did not change.
+            var site = new Site("test-site")
+            {
+                Kind = "functionapp,linux",
+                Sku = "premium"
+            };
+
+            var exception = Assert.Throws<CliException>(
+                () => PublishFunctionAppAction.ValidateGoPublishOptions(site, BuildOption.Default, buildNativeDeps: true));
+
+            Assert.Equal("--build-native-deps is not supported for Go. Run 'func publish' without '--build-native-deps'.", exception.Message);
+        }
+
+        [Theory]
+        [InlineData("native", WorkerRuntime.Rust, WorkerRuntime.Rust)]
+        [InlineData("NATIVE", WorkerRuntime.Rust, WorkerRuntime.Rust)]
+        [InlineData("go", WorkerRuntime.Rust, WorkerRuntime.Rust)]
+        [InlineData("python", WorkerRuntime.Rust, WorkerRuntime.Python)]
+        [InlineData("node", WorkerRuntime.Rust, WorkerRuntime.Node)]
+        [InlineData("native", WorkerRuntime.Go, WorkerRuntime.Go)]
+        [InlineData("go", WorkerRuntime.Go, WorkerRuntime.Go)]
+        public void NormalizeFunctionAppWorkerRuntime_NativeStack_MatchesTheLocalNativeLanguage(string azureValue, WorkerRuntime local, WorkerRuntime expected)
+        {
+            var runtime = PublishFunctionAppAction.NormalizeFunctionAppWorkerRuntime(azureValue, local);
+
+            Assert.Equal(expected, runtime);
+        }
+
+        [Fact]
+        public void NormalizeFunctionAppWorkerRuntime_NativeAppWithAPythonProject_IsNotAValidRuntime()
+        {
+            // A native Azure app is not a match for a project of another stack.
+            Assert.Throws<ArgumentException>(
+                () => PublishFunctionAppAction.NormalizeFunctionAppWorkerRuntime("native", WorkerRuntime.Python));
+        }
+
+        [Theory]
+        [InlineData(WorkerRuntime.Rust, "native")]
+        [InlineData(WorkerRuntime.Go, "native")]
+        [InlineData(WorkerRuntime.Python, "python")]
+        [InlineData(WorkerRuntime.Node, "node")]
+        public void GetFunctionAppWorkerRuntimeSetting_ReturnsTheSettingOfTheApp(WorkerRuntime runtime, string expected)
+        {
+            Assert.Equal(expected, PublishFunctionAppAction.GetFunctionAppWorkerRuntimeSetting(runtime));
+        }
+
+        // Flex names the stack in functionAppConfig.runtime.name. A native app (unverified for Rust, no Rust app has run
+        // on Flex yet) is expected on the same stack as a Go app, because the platform does not tell them apart.
+        [Theory]
+        [InlineData(true, WorkerRuntime.Rust, "go")]
+        [InlineData(true, WorkerRuntime.Go, "go")]
+        [InlineData(true, WorkerRuntime.Python, "python")]
+        [InlineData(false, WorkerRuntime.Rust, "native")]
+        [InlineData(false, WorkerRuntime.Go, "native")]
+        [InlineData(false, WorkerRuntime.Node, "node")]
+        public void GetExpectedFunctionAppWorkerRuntime_FlexUsesTheStackName(bool isFlex, WorkerRuntime runtime, string expected)
+        {
+            Assert.Equal(expected, PublishFunctionAppAction.GetExpectedFunctionAppWorkerRuntime(isFlex, runtime));
+        }
+
+        [Fact]
+        public void GetLinuxFxVersionForWorkerRuntime_Rust_UsesTheNativeStack()
+        {
+            Assert.Equal("Go|1.0", PublishFunctionAppAction.GetLinuxFxVersionForWorkerRuntime(WorkerRuntime.Rust));
+        }
+
+        [Fact]
+        public async Task UpdateFrameworkVersions_RustForcePublish_UsesTheNativeLinuxFxVersion()
+        {
+            var site = new Site("test-site")
+            {
+                Kind = "functionapp,linux",
+                Sku = "elasticpremium",
+                LinuxFxVersion = "Node|22"
+            };
+            var helperServiceMock = new Mock<PublishFunctionAppAction.AzureHelperService>(null, null);
+            helperServiceMock
+                .Setup(x => x.UpdateWebSettings(site, It.IsAny<Dictionary<string, string>>()))
+                .ReturnsAsync(new HttpResult<string, string>(string.Empty));
+
+            await PublishFunctionAppAction.UpdateFrameworkVersions(site, WorkerRuntime.Rust, null, true, helperServiceMock.Object);
+
+            helperServiceMock.Verify(
+                x => x.UpdateWebSettings(
+                    site,
+                    It.Is<Dictionary<string, string>>(settings =>
+                        settings.Count == 1 && settings[Constants.LinuxFxVersion] == "Go|1.0")),
+                Times.Once);
+        }
+
+        [Fact]
+        public async Task UpdateFrameworkVersions_RustOnTheNativeStack_DoesNotUpdate()
+        {
+            var site = new Site("test-site")
+            {
+                Kind = "functionapp,linux",
+                Sku = "premium",
+                LinuxFxVersion = "Go|1.0"
+            };
+            var helperServiceMock = new Mock<PublishFunctionAppAction.AzureHelperService>(null, null);
+
+            var exception = await Record.ExceptionAsync(
+                () => PublishFunctionAppAction.UpdateFrameworkVersions(site, WorkerRuntime.Rust, null, false, helperServiceMock.Object));
+
+            Assert.Null(exception);
+            helperServiceMock.Verify(
+                x => x.UpdateWebSettings(It.IsAny<Site>(), It.IsAny<Dictionary<string, string>>()),
+                Times.Never);
+        }
+
+        [Fact]
+        public async Task UpdateFrameworkVersions_RustOnAnotherStack_ThrowsWithoutForce()
+        {
+            var site = new Site("test-site")
+            {
+                Kind = "functionapp,linux",
+                Sku = "premium",
+                LinuxFxVersion = "Node|22"
+            };
+            var helperServiceMock = new Mock<PublishFunctionAppAction.AzureHelperService>(null, null);
+
+            var exception = await Assert.ThrowsAsync<CliException>(
+                () => PublishFunctionAppAction.UpdateFrameworkVersions(site, WorkerRuntime.Rust, null, false, helperServiceMock.Object));
+
+            Assert.Contains("Node|22", exception.Message);
+            Assert.Contains("--force", exception.Message);
+        }
+
+        [Theory]
+        [InlineData(WorkerRuntime.Rust, WorkerRuntime.Go)]
+        [InlineData(WorkerRuntime.Go, WorkerRuntime.Go)]
+        [InlineData(WorkerRuntime.Python, WorkerRuntime.Python)]
+        [InlineData(WorkerRuntime.None, WorkerRuntime.None)]
+        public void GetPlatformWorkerRuntime_NativeAppsUseTheGoStack(WorkerRuntime runtime, WorkerRuntime expected)
+        {
+            Assert.Equal(expected, WorkerRuntimeLanguageHelper.GetPlatformWorkerRuntime(runtime));
+        }
+
+        [Theory]
         [InlineData("functionapp", "11.0", "netFrameworkVersion", "v11.0")]
         [InlineData("functionapp", "v11.0", "netFrameworkVersion", "v11.0")]
         [InlineData("functionapp,linux", "11.0", "linuxFxVersion", "DOTNET-ISOLATED|11.0")]
