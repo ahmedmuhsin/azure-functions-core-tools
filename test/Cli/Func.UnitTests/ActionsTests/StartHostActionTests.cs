@@ -28,7 +28,7 @@ namespace Azure.Functions.Cli.UnitTests.ActionsTests
         [InlineData(WorkerRuntime.Python)]
         [InlineData(WorkerRuntime.Custom)]
         [InlineData(WorkerRuntime.None)]
-        public void AddGoWorkerConfigurationDefaults_SetsWindowsGoExecutablePathOnly(WorkerRuntime runtime)
+        public void AddNativeWorkerConfigurationDefaults_SetsWindowsNativeExecutablePathOnly(WorkerRuntime runtime)
         {
             var originalRuntime = GlobalCoreToolsSettings.CurrentWorkerRuntimeOrNone;
             try
@@ -36,12 +36,35 @@ namespace Azure.Functions.Cli.UnitTests.ActionsTests
                 GlobalCoreToolsSettings.CurrentWorkerRuntime = runtime;
                 var builder = new ConfigurationBuilder();
 
-                StartHostAction.AddGoWorkerConfigurationDefaults(builder);
+                StartHostAction.AddNativeWorkerConfigurationDefaults(builder);
 
-                var expected = OperatingSystem.IsWindows() && runtime == WorkerRuntime.Go
+                var expected = OperatingSystem.IsWindows() && WorkerRuntimeLanguageHelper.IsNative(runtime)
                     ? Path.Combine("bin", "app.exe")
                     : null;
                 builder.Build()["languageWorkers:native:defaultExecutablePath"].Should().Be(expected);
+            }
+            finally
+            {
+                GlobalCoreToolsSettings.CurrentWorkerRuntime = originalRuntime;
+            }
+        }
+
+        // A Rust app runs the debug binary that 'func start' builds in target/func, on every OS. The shipped native worker config names
+        // bin/app, which only 'func pack' writes, so the host is pointed at the binary of 'func start' and not at that file.
+        [Fact]
+        public void AddNativeWorkerConfigurationDefaults_Rust_PointsTheHostAtTheBinaryOfFuncStartOnEveryOs()
+        {
+            var originalRuntime = GlobalCoreToolsSettings.CurrentWorkerRuntimeOrNone;
+            try
+            {
+                GlobalCoreToolsSettings.CurrentWorkerRuntime = WorkerRuntime.Rust;
+                var builder = new ConfigurationBuilder();
+
+                StartHostAction.AddNativeWorkerConfigurationDefaults(builder);
+
+                var path = builder.Build()["languageWorkers:native:defaultExecutablePath"];
+                path.Should().Be(Path.Combine("target", "func", OperatingSystem.IsWindows() ? "app.exe" : "app"));
+                path.Should().Be(RustHelpers.LocalBinaryPath);
             }
             finally
             {
@@ -56,31 +79,34 @@ namespace Azure.Functions.Cli.UnitTests.ActionsTests
         [InlineData(@"C:\custom worker\worker.exe", false)]
         [InlineData("bin/app", true)]
         [InlineData("bin/app", false)]
-        public void AddGoWorkerConfigurationDefaults_PreservesExplicitPath(string executablePath, bool configureFirst)
+        public void AddNativeWorkerConfigurationDefaults_PreservesExplicitPath(string executablePath, bool configureFirst)
         {
             var originalRuntime = GlobalCoreToolsSettings.CurrentWorkerRuntimeOrNone;
             try
             {
-                GlobalCoreToolsSettings.CurrentWorkerRuntime = WorkerRuntime.Go;
-                var builder = new ConfigurationBuilder();
-                var settings = new Dictionary<string, string>
+                foreach (var runtime in new[] { WorkerRuntime.Go, WorkerRuntime.Rust })
                 {
-                    ["languageWorkers:native:defaultExecutablePath"] = executablePath
-                };
+                    GlobalCoreToolsSettings.CurrentWorkerRuntime = runtime;
+                    var builder = new ConfigurationBuilder();
+                    var settings = new Dictionary<string, string>
+                    {
+                        ["languageWorkers:native:defaultExecutablePath"] = executablePath
+                    };
 
-                if (configureFirst)
-                {
-                    builder.AddInMemoryCollection(settings);
+                    if (configureFirst)
+                    {
+                        builder.AddInMemoryCollection(settings);
+                    }
+
+                    StartHostAction.AddNativeWorkerConfigurationDefaults(builder);
+
+                    if (!configureFirst)
+                    {
+                        builder.AddInMemoryCollection(settings);
+                    }
+
+                    builder.Build()["languageWorkers:native:defaultExecutablePath"].Should().Be(executablePath, $"for {runtime}");
                 }
-
-                StartHostAction.AddGoWorkerConfigurationDefaults(builder);
-
-                if (!configureFirst)
-                {
-                    builder.AddInMemoryCollection(settings);
-                }
-
-                builder.Build()["languageWorkers:native:defaultExecutablePath"].Should().Be(executablePath);
             }
             finally
             {
@@ -91,7 +117,7 @@ namespace Azure.Functions.Cli.UnitTests.ActionsTests
         [Theory]
         [InlineData("languageWorkers:native:defaultExecutablePath")]
         [InlineData("languageWorkers__native__defaultExecutablePath")]
-        public void AddGoWorkerConfigurationDefaults_PreservesEnvironmentPath(string settingName)
+        public void AddNativeWorkerConfigurationDefaults_PreservesEnvironmentPath(string settingName)
         {
             var originalRuntime = GlobalCoreToolsSettings.CurrentWorkerRuntimeOrNone;
             var settingNames = new[]
@@ -103,19 +129,22 @@ namespace Azure.Functions.Cli.UnitTests.ActionsTests
             const string executablePath = "bin/custom-worker.exe";
             try
             {
-                GlobalCoreToolsSettings.CurrentWorkerRuntime = WorkerRuntime.Go;
-                foreach (var name in settingNames)
+                foreach (var runtime in new[] { WorkerRuntime.Go, WorkerRuntime.Rust })
                 {
-                    Environment.SetEnvironmentVariable(name, null);
+                    GlobalCoreToolsSettings.CurrentWorkerRuntime = runtime;
+                    foreach (var name in settingNames)
+                    {
+                        Environment.SetEnvironmentVariable(name, null);
+                    }
+
+                    Environment.SetEnvironmentVariable(settingName, executablePath);
+                    var builder = new ConfigurationBuilder();
+
+                    StartHostAction.AddNativeWorkerConfigurationDefaults(builder);
+                    builder.AddEnvironmentVariables();
+
+                    builder.Build()["languageWorkers:native:defaultExecutablePath"].Should().Be(executablePath, $"for {runtime}");
                 }
-
-                Environment.SetEnvironmentVariable(settingName, executablePath);
-                var builder = new ConfigurationBuilder();
-
-                StartHostAction.AddGoWorkerConfigurationDefaults(builder);
-                builder.AddEnvironmentVariables();
-
-                builder.Build()["languageWorkers:native:defaultExecutablePath"].Should().Be(executablePath);
             }
             finally
             {

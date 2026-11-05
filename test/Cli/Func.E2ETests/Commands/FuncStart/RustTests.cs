@@ -1,0 +1,327 @@
+// Copyright (c) .NET Foundation. All rights reserved.
+// Licensed under the MIT License. See LICENSE in the project root for license information.
+
+using System.Diagnostics;
+using AwesomeAssertions;
+using Azure.Functions.Cli.E2ETests.Traits;
+using Azure.Functions.Cli.Helpers;
+using Azure.Functions.Cli.TestFramework.Assertions;
+using Azure.Functions.Cli.TestFramework.Commands;
+using Azure.Functions.Cli.TestFramework.Helpers;
+using Xunit;
+using Xunit.Abstractions;
+
+namespace Azure.Functions.Cli.E2ETests.Commands.FuncStart
+{
+    [Trait(WorkerRuntimeTraits.WorkerRuntime, WorkerRuntimeTraits.Rust)]
+    public class RustTests(ITestOutputHelper log) : BaseE2ETests(log)
+    {
+        // Set this to a checkout of the Rust SDK workspace (the folder that holds crates/) to run the
+        // test that calls a function. The scaffolded manifest names crates that are not published yet,
+        // so that test points them at this checkout.
+        private const string SdkDirectoryVariable = "RUST_E2E_SDK_DIR";
+
+        // A worker that needs no crates. It records its working directory and the arguments the host gave
+        // it, which is all the first test needs to prove that Core Tools built it and the host launched it.
+        private const string ProbeManifest = "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"2024\"\n";
+        private const string ProbeSource =
+            "fn main() {\n" +
+            "    let args: Vec<String> = std::env::args().collect();\n" +
+            "    let cwd = std::env::current_dir().unwrap();\n" +
+            "    std::fs::write(\"probe-exe.txt\", std::env::current_exe().unwrap().display().to_string()).unwrap();\n" +
+            "    std::fs::write(\"probe-args.txt\", format!(\"{}\\n{}\", cwd.display(), args.join(\"\\n\"))).unwrap();\n" +
+            "    std::thread::sleep(std::time::Duration::from_secs(5));\n" +
+            "}\n";
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task Start_Rust_BuildsAndLaunchesTheWorker(bool noBuild)
+        {
+            var testName = $"{nameof(Start_Rust_BuildsAndLaunchesTheWorker)}_{noBuild}";
+            await FuncInitWithRetryAsync(testName, [".", "--worker-runtime", "rust"]);
+            File.WriteAllText(Path.Combine(WorkingDirectory, "Cargo.toml"), ProbeManifest);
+            File.WriteAllText(Path.Combine(WorkingDirectory, "src", "main.rs"), ProbeSource);
+
+            var binaryPath = Path.Combine(WorkingDirectory, RustHelpers.LocalBinaryPath);
+            if (noBuild)
+            {
+                await RustHelpers.BuildProject(WorkingDirectory);
+                File.Exists(binaryPath).Should().BeTrue();
+            }
+            else
+            {
+                File.Exists(binaryPath).Should().BeFalse();
+            }
+
+            var probeFile = Path.Combine(WorkingDirectory, "probe-args.txt");
+            var port = ProcessHelper.GetAvailablePort();
+            var command = new FuncStartCommand(FuncPath, testName, Log);
+            command.ProcessStartedHandler = async process =>
+            {
+                try
+                {
+                    await WaitForFileAsync(probeFile, TimeSpan.FromMinutes(4));
+                }
+                finally
+                {
+                    if (!process.HasExited)
+                    {
+                        process.Kill(true);
+                    }
+                }
+            };
+
+            var arguments = new List<string> { "--port", port.ToString() };
+            if (noBuild)
+            {
+                arguments.Add("--no-build");
+            }
+
+            var result = command
+                .WithWorkingDirectory(WorkingDirectory)
+                .WithEnvironmentVariable(Common.Constants.FunctionsWorkerRuntime, "native")
+                .WithEnvironmentVariable(Common.Constants.FunctionsCliNativeLanguage, "rust")
+                .Execute(arguments);
+
+            File.Exists(probeFile).Should().BeTrue("the host should have launched the worker");
+            var recorded = File.ReadAllLines(probeFile);
+            Path.GetFileName(recorded[0]).Should().Be(Path.GetFileName(WorkingDirectory), "the worker starts in the app folder");
+
+            // The host ran the binary that 'func start' keeps in target/func, and 'func start' wrote nothing in bin, which is where
+            // 'func pack' puts the package binary and 'func pack --no-build' looks for it.
+            var executable = File.ReadAllText(Path.Combine(WorkingDirectory, "probe-exe.txt")).Replace('\\', '/');
+            executable.Should().EndWith(RustHelpers.LocalBinaryPath.Replace('\\', '/'), "the host runs the binary of 'func start'");
+            Directory.Exists(Path.Combine(WorkingDirectory, "bin")).Should().BeFalse("only 'func pack' writes in bin");
+
+            // The host gives a directly launched worker both spellings of its startup arguments.
+            recorded.Should().Contain(["--host", "--port", "--workerId", "--requestId", "--functions-uri", "--functions-worker-id", "--functions-request-id"]);
+
+            result.Should().HaveStdOutContaining(Utilities.RustPreviewWarning);
+            if (noBuild)
+            {
+                result.Should().NotHaveStdOutContaining("Building Rust worker binary");
+            }
+            else
+            {
+                result.Should().HaveStdOutContaining($"Building Rust worker binary '{RustHelpers.LocalBinaryPath}'");
+            }
+        }
+
+        // 'func start --no-build' runs a binary that is already built, so it must not need cargo on the PATH. The probe
+        // worker is built here with cargo, and the host is then started with a PATH that has no cargo in it.
+        [SkippableFact]
+        public async Task Start_Rust_NoBuild_RunsWithoutCargoOnThePath()
+        {
+            Skip.IfNot(CargoIsAvailable(), "Needs cargo to build the probe worker.");
+
+            var testName = nameof(Start_Rust_NoBuild_RunsWithoutCargoOnThePath);
+            await FuncInitWithRetryAsync(testName, [".", "--worker-runtime", "rust"]);
+            File.WriteAllText(Path.Combine(WorkingDirectory, "Cargo.toml"), ProbeManifest);
+            File.WriteAllText(Path.Combine(WorkingDirectory, "src", "main.rs"), ProbeSource);
+            await RustHelpers.BuildProject(WorkingDirectory);
+            File.Exists(Path.Combine(WorkingDirectory, RustHelpers.LocalBinaryPath)).Should().BeTrue();
+
+            var pathWithoutCargo = PathWithoutCargo();
+            var probeFile = Path.Combine(WorkingDirectory, "probe-args.txt");
+            var port = ProcessHelper.GetAvailablePort();
+            var command = new FuncStartCommand(FuncPath, testName, Log);
+            command.ProcessStartedHandler = async process =>
+            {
+                try
+                {
+                    await WaitForFileAsync(probeFile, TimeSpan.FromMinutes(4), process);
+                }
+                finally
+                {
+                    if (!process.HasExited)
+                    {
+                        process.Kill(true);
+                    }
+                }
+            };
+
+            var result = command
+                .WithWorkingDirectory(WorkingDirectory)
+                .WithEnvironmentVariable("PATH", pathWithoutCargo)
+                .WithEnvironmentVariable(Common.Constants.FunctionsWorkerRuntime, "native")
+                .WithEnvironmentVariable(Common.Constants.FunctionsCliNativeLanguage, "rust")
+                .Execute(["--port", port.ToString(), "--no-build"]);
+
+            File.Exists(probeFile).Should().BeTrue("the host should have launched the worker although there is no cargo on the PATH");
+            result.Should().NotHaveStdOutContaining("Building Rust worker binary");
+        }
+
+        // The debug binary of 'func start' must never be packed by accident. On an x86_64 Linux machine it was: the start left it in
+        // bin/app, where it is a valid x86_64 ELF file, and 'func pack --no-build' took it for the binary of the package.
+        [SkippableFact]
+        public async Task Start_Rust_ThenPackNoBuild_FindsNoBinaryToPack()
+        {
+            Skip.IfNot(CargoIsAvailable(), "Needs cargo to build the probe worker.");
+
+            var testName = nameof(Start_Rust_ThenPackNoBuild_FindsNoBinaryToPack);
+            await FuncInitWithRetryAsync(testName, [".", "--worker-runtime", "rust"]);
+            File.WriteAllText(Path.Combine(WorkingDirectory, "Cargo.toml"), ProbeManifest);
+            File.WriteAllText(Path.Combine(WorkingDirectory, "src", "main.rs"), ProbeSource);
+
+            var probeFile = Path.Combine(WorkingDirectory, "probe-args.txt");
+            var port = ProcessHelper.GetAvailablePort();
+            var start = new FuncStartCommand(FuncPath, testName, Log);
+            start.ProcessStartedHandler = async process =>
+            {
+                try
+                {
+                    await WaitForFileAsync(probeFile, TimeSpan.FromMinutes(4), process);
+                }
+                finally
+                {
+                    if (!process.HasExited)
+                    {
+                        process.Kill(true);
+                    }
+                }
+            };
+
+            start
+                .WithWorkingDirectory(WorkingDirectory)
+                .WithEnvironmentVariable(Common.Constants.FunctionsWorkerRuntime, "native")
+                .WithEnvironmentVariable(Common.Constants.FunctionsCliNativeLanguage, "rust")
+                .Execute(["--port", port.ToString()]);
+
+            File.Exists(probeFile).Should().BeTrue("the start built the worker and the host launched it");
+            File.Exists(Path.Combine(WorkingDirectory, RustHelpers.LocalBinaryPath)).Should().BeTrue("the start left its binary in target/func");
+
+            var pack = new FuncPackCommand(FuncPath, $"{testName}_pack", Log)
+                .WithWorkingDirectory(WorkingDirectory)
+                .Execute(["--no-build"]);
+
+            pack.Should().ExitWith(1);
+            pack.Should().HaveStdErrContaining("Could not find a built Rust binary");
+            Directory.GetFiles(WorkingDirectory, "*.zip").Should().BeEmpty("there was no binary of the package to pack");
+        }
+
+        [SkippableTheory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task Start_Rust_ExecutesHttpFunction(bool noBuild)
+        {
+            var sdkDirectory = Environment.GetEnvironmentVariable(SdkDirectoryVariable);
+            Skip.If(string.IsNullOrEmpty(sdkDirectory), $"Set {SdkDirectoryVariable} to a checkout of the Rust SDK workspace to run this test.");
+
+            var testName = $"{nameof(Start_Rust_ExecutesHttpFunction)}_{noBuild}";
+            await FuncInitWithRetryAsync(testName, [".", "--worker-runtime", "rust"]);
+            PointTheSdkDependenciesAt(sdkDirectory!);
+
+            var binaryPath = Path.Combine(WorkingDirectory, RustHelpers.LocalBinaryPath);
+            if (noBuild)
+            {
+                await RustHelpers.BuildProject(WorkingDirectory);
+                File.Exists(binaryPath).Should().BeTrue();
+            }
+            else
+            {
+                File.Exists(binaryPath).Should().BeFalse();
+            }
+
+            var port = ProcessHelper.GetAvailablePort();
+            var command = new FuncStartCommand(FuncPath, testName, Log);
+            string? response = null;
+            command.ProcessStartedHandler = async process =>
+            {
+                response = await ProcessHelper.ProcessStartedHandlerHelper(
+                    port,
+                    process,
+                    command.FileWriter ?? throw new ArgumentNullException(nameof(command.FileWriter)),
+                    "hello");
+            };
+
+            var arguments = new List<string> { "--port", port.ToString() };
+            if (noBuild)
+            {
+                arguments.Add("--no-build");
+            }
+
+            var result = command
+                .WithWorkingDirectory(WorkingDirectory)
+                .WithEnvironmentVariable(Common.Constants.FunctionsWorkerRuntime, "native")
+                .WithEnvironmentVariable(Common.Constants.FunctionsCliNativeLanguage, "rust")
+                .Execute(arguments);
+
+            response.Should().Be("Hello from Rust Worker!");
+            File.Exists(binaryPath).Should().BeTrue();
+            Directory.Exists(Path.Combine(WorkingDirectory, "bin")).Should().BeFalse("only 'func pack' writes in bin");
+            if (noBuild)
+            {
+                result.Should().NotHaveStdOutContaining("Building Rust worker binary");
+            }
+            else
+            {
+                result.Should().HaveStdOutContaining($"Building Rust worker binary '{RustHelpers.LocalBinaryPath}'");
+            }
+        }
+
+        private static async Task WaitForFileAsync(string path, TimeSpan timeout, Process? process = null)
+        {
+            var deadline = DateTime.UtcNow + timeout;
+            while (DateTime.UtcNow < deadline)
+            {
+                if (File.Exists(path) && new FileInfo(path).Length > 0)
+                {
+                    return;
+                }
+
+                // A start that failed has nothing left to wait for.
+                if (process is { HasExited: true })
+                {
+                    return;
+                }
+
+                await Task.Delay(500);
+            }
+        }
+
+        private static bool CargoIsAvailable()
+        {
+            try
+            {
+                using var process = Process.Start(new ProcessStartInfo("cargo", "--version")
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                });
+                process!.StandardOutput.ReadToEnd();
+                process.StandardError.ReadToEnd();
+                return process.WaitForExit(30000) && process.ExitCode == 0;
+            }
+            catch (System.ComponentModel.Win32Exception)
+            {
+                return false;
+            }
+        }
+
+        // The PATH of this process without the folders that hold cargo.
+        private static string PathWithoutCargo()
+        {
+            var cargo = OperatingSystem.IsWindows() ? "cargo.exe" : "cargo";
+            var folders = (Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
+                .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+                .Where(folder => !File.Exists(Path.Combine(folder, cargo)));
+            return string.Join(Path.PathSeparator, folders);
+        }
+
+        private void PointTheSdkDependenciesAt(string sdkDirectory)
+        {
+            var manifestPath = Path.Combine(WorkingDirectory, "Cargo.toml");
+            var crates = sdkDirectory.Replace('\\', '/').TrimEnd('/') + "/crates";
+            var lines = File.ReadAllLines(manifestPath)
+                .Select(line => line.StartsWith("azure-functions-rust-sdk", StringComparison.Ordinal)
+                    ? $"azure-functions-rust-sdk = {{ path = \"{crates}/azure-functions-rust-sdk\" }}"
+                    : line.StartsWith("azure-functions-rust-worker", StringComparison.Ordinal)
+                        ? $"azure-functions-rust-worker = {{ path = \"{crates}/azure-functions-rust-worker\" }}"
+                        : line);
+            File.WriteAllLines(manifestPath, lines);
+        }
+    }
+}

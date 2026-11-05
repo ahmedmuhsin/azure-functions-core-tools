@@ -244,7 +244,7 @@ namespace Azure.Functions.Cli.Actions.HostActions
                 .UseUrls(listenAddress.ToString())
                 .ConfigureAppConfiguration(configBuilder =>
                 {
-                    AddGoWorkerConfigurationDefaults(configBuilder);
+                    AddNativeWorkerConfigurationDefaults(configBuilder);
                     configBuilder.AddEnvironmentVariables();
                 })
                 .ConfigureLogging(loggingBuilder =>
@@ -295,16 +295,31 @@ namespace Azure.Functions.Cli.Actions.HostActions
         }
 #pragma warning restore ASPDEPR008
 
-        internal static void AddGoWorkerConfigurationDefaults(IConfigurationBuilder configBuilder)
+        internal static void AddNativeWorkerConfigurationDefaults(IConfigurationBuilder configBuilder)
         {
-            if (OperatingSystem.IsWindows() && GlobalCoreToolsSettings.CurrentWorkerRuntimeOrNone == WorkerRuntime.Go)
+            var runtime = GlobalCoreToolsSettings.CurrentWorkerRuntimeOrNone;
+
+            // The shipped native worker config names bin/app. A Rust app runs the debug binary that 'func start' builds in target/func, on every
+            // OS, because bin/app is the binary of the package and only 'func pack' writes it. Other native
+            // languages keep the shipped default, and get the executable name of Windows from Core Tools.
+            string defaultExecutablePath = null;
+            if (runtime == WorkerRuntime.Rust)
+            {
+                defaultExecutablePath = RustHelpers.LocalBinaryPath;
+            }
+            else if (OperatingSystem.IsWindows() && WorkerRuntimeLanguageHelper.IsNative(runtime))
+            {
+                defaultExecutablePath = NativeWorkerHelpers.LocalBinaryPath;
+            }
+
+            if (defaultExecutablePath != null)
             {
                 // Keep explicit settings above this default, regardless of when their source is added.
                 configBuilder.Sources.Insert(0, new MemoryConfigurationSource
                 {
                     InitialData = new Dictionary<string, string>
                     {
-                        ["languageWorkers:native:defaultExecutablePath"] = GoHelpers.LocalBinaryPath
+                        ["languageWorkers:native:defaultExecutablePath"] = defaultExecutablePath
                     }
                 });
             }
@@ -779,6 +794,7 @@ namespace Azure.Functions.Cli.Actions.HostActions
             }
 
             Utilities.WarnIfGoWorkerRuntime(resolved);
+            Utilities.WarnIfRustWorkerRuntime(resolved);
 
             EnsureWorkerRuntimeIsSet();
 
@@ -818,6 +834,10 @@ namespace Azure.Functions.Cli.Actions.HostActions
                 {
                     await GoHelpers.BuildProject();
                 }
+            }
+            else if (GlobalCoreToolsSettings.CurrentWorkerRuntime == WorkerRuntime.Rust)
+            {
+                await RustHelpers.PrepareForStart(NoBuild);
             }
 
             if (!NetworkHelpers.IsPortAvailable(Port))
