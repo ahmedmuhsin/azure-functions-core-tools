@@ -21,7 +21,8 @@ namespace Azure.Functions.Cli.Common
         public const string FunctionsWorkerRuntime = "FUNCTIONS_WORKER_RUNTIME";
         public const string FunctionsWorkerRuntimeVersion = "FUNCTIONS_WORKER_RUNTIME_VERSION";
 
-        // CLI-only disambiguator for FUNCTIONS_WORKER_RUNTIME=native projects. Read from env
+        // CLI-only override for FUNCTIONS_WORKER_RUNTIME=native projects. A native app does not need it, because the
+        // language comes from the files of the project (go.mod or Cargo.toml). Read from env
         // first, then local.settings.json (Values). Never sent to the host or to Azure (the CLI
         // strips local.settings on publish). Today "go" and "rust" are recognized; new native languages
         // (c++, etc.) extend this same value space rather than introducing parallel flags.

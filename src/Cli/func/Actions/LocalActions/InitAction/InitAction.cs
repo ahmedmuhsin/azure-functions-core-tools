@@ -484,9 +484,9 @@ namespace Azure.Functions.Cli.Actions.LocalActions
                 : Constants.StorageEmulatorConnectionString;
             localSettingsJsonContent = localSettingsJsonContent.Replace($"{{{Constants.AzureWebJobsStorage}}}", azureWebJobsStorageValue);
 
-            // Add the explicit native language opt-in so the CLI doesn't have to fall back to scanning
-            // for go.mod or Cargo.toml on every command. See WorkerRuntimeLanguageHelper.GetCurrentWorkerRuntimeLanguage.
-            if (isNative)
+            // The setting names the native language of a Go app, so the CLI does not scan for go.mod on every command.
+            // The language of a Rust app comes from its Cargo.toml. See WorkerRuntimeLanguageHelper.GetCurrentWorkerRuntimeLanguage.
+            if (workerRuntime == Helpers.WorkerRuntime.Go)
             {
                 localSettingsJsonContent = AddLocalSetting(localSettingsJsonContent, Constants.FunctionsCliNativeLanguage, WorkerRuntimeLanguageHelper.GetRuntimeMoniker(workerRuntime));
             }

@@ -198,8 +198,8 @@ namespace Azure.Functions.Cli.Helpers
 
         public static WorkerRuntime GetCurrentWorkerRuntimeLanguage(ISecretsManager secretsManager, bool refreshSecrets = false)
         {
-            // FUNCTIONS_CLI_NATIVE_LANGUAGE lets a project declare its native language without
-            // forcing the resolver to scan the working directory for go.mod or Cargo.toml. Env var
+            // FUNCTIONS_CLI_NATIVE_LANGUAGE is an optional override that lets a project declare its native language
+            // without the resolver scanning the working directory for go.mod or Cargo.toml. Env var
             // wins; local.settings.json is the secondary source. See TryResolveNativeLanguage.
             if (TryResolveNativeLanguage(secretsManager, refreshSecrets, out var nativeRuntime))
             {
@@ -276,9 +276,8 @@ namespace Azure.Functions.Cli.Helpers
         /// <c>go.mod</c> is checked first, so an existing Go app that also holds a Rust crate keeps
         /// resolving to Go. Add new native languages here as they are introduced. Invoked exclusively from
         /// <see cref="GetCurrentWorkerRuntimeLanguage"/> so callers never have to special-case
-        /// the "native" literal. Preferred path is the explicit <see cref="Constants.FunctionsCliNativeLanguage"/>
-        /// opt-in checked earlier in the resolver; this fallback exists for projects that
-        /// predate the flag.
+        /// the "native" literal. An app needs only FUNCTIONS_WORKER_RUNTIME=native and its marker file. The optional
+        /// <see cref="Constants.FunctionsCliNativeLanguage"/> override is checked earlier in the resolver.
         /// </remarks>
         private static WorkerRuntime ResolveNativeFromProjectMarkers()
         {
@@ -296,7 +295,7 @@ namespace Azure.Functions.Cli.Helpers
             {
                 if (GlobalCoreToolsSettings.IsVerbose)
                 {
-                    ColoredConsole.WriteLine(VerboseColor($"Resolving native worker runtime to 'rust' ({RustHelpers.CargoTomlFileName} found; consider setting {Constants.FunctionsCliNativeLanguage}=rust in local.settings.json)."));
+                    ColoredConsole.WriteLine(VerboseColor($"Resolving native worker runtime to 'rust' ({RustHelpers.CargoTomlFileName} found)."));
                 }
 
                 return WorkerRuntime.Rust;
@@ -304,12 +303,14 @@ namespace Azure.Functions.Cli.Helpers
 
             throw new CliException(
                 $"FUNCTIONS_WORKER_RUNTIME is set to 'native' but no supported project marker ({GoHelpers.GoModFileName} or {RustHelpers.CargoTomlFileName}) was found in '{Environment.CurrentDirectory}'. " +
-                $"Set '{Constants.FunctionsCliNativeLanguage}=go' or '{Constants.FunctionsCliNativeLanguage}=rust' in local.settings.json, or run 'func init' to initialize a supported function app in this directory.");
+                "Run the command in the folder of the app, or run 'func init' to initialize a supported function app in this directory.");
         }
 
         /// <summary>
         /// Returns <c>true</c> when FUNCTIONS_CLI_NATIVE_LANGUAGE names a supported native language
         /// ("go" or "rust"), either in the process environment or in <c>local.settings.json</c>.
+        /// It is an optional override for a project that sets it by hand, for example a folder that holds both
+        /// <c>go.mod</c> and <c>Cargo.toml</c>.
         /// Env var wins; an unrecognized env value does not hide a recognized setting.
         /// local.settings.json access failures (e.g. command run from outside a project root)
         /// are treated as "not set".

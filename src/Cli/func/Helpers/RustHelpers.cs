@@ -23,11 +23,6 @@ namespace Azure.Functions.Cli.Helpers
         internal const string CargoExecutable = "cargo";
         internal const string LinuxTarget = "x86_64-unknown-linux-gnu";
 
-        // Where Cargo writes build output, and the folder inside it that holds the binary of 'func start'. Other Cargo tools keep their
-        // output in target/<tool>, such as target/lambda for cargo-lambda.
-        internal const string TargetDirectoryName = "target";
-        internal const string FuncDirectoryName = "func";
-
         // The last sentence is advice and names no glibc version, because the glibc of the platform that runs the app can change.
         internal const string LinuxToolchainHint =
             $"Hint: 'func pack' builds for {LinuxTarget}. Install the target with 'rustup target add {LinuxTarget}' and make sure a linker for it is available. " +
@@ -72,13 +67,12 @@ namespace Azure.Functions.Cli.Helpers
         private static readonly TimeSpan _pumpGrace = TimeSpan.FromSeconds(3);
 
         /// <summary>
-        /// The binary that <c>func start</c> builds and the host runs, relative to the project folder: <c>target/func/app</c>
-        /// (<c>target\func\app.exe</c> on Windows). It is a debug build, in a folder of its own under <c>target/</c>, where a Rust
-        /// developer expects build output and where git ignores it. It is not <c>bin/app</c>, which is the binary of the package:
-        /// only <c>func pack</c> writes that file, and only <c>func pack --no-build</c> and <c>func publish --no-build</c> read it,
-        /// so a debug build that a start left behind can never be packed by accident.
+        /// The binary that <c>func start</c> builds and the host runs, relative to the project folder: <c>bin/app</c>
+        /// (<c>bin\app.exe</c> on Windows), the executable that the shipped native worker config names. After <c>func start</c> it is
+        /// a debug build. <c>func pack</c> writes a release binary to <c>bin/app</c>, and <c>func pack --no-build</c> and
+        /// <c>func publish --no-build</c> read it, and warn when it has debug information.
         /// </summary>
-        internal static string LocalBinaryPath => Path.Combine(TargetDirectoryName, FuncDirectoryName, OperatingSystem.IsWindows() ? $"{NativeWorkerHelpers.BinaryName}.exe" : NativeWorkerHelpers.BinaryName);
+        internal static string LocalBinaryPath => NativeWorkerHelpers.LocalBinaryPath;
 
         /// <summary>
         /// The warning of <c>func pack --no-build</c> and <c>func publish --no-build</c> for a <c>bin/app</c> that has debug information.
@@ -362,10 +356,11 @@ namespace Azure.Functions.Cli.Helpers
 
         /// <summary>
         /// Builds the user's package in the debug profile and copies the binary it produces to <see cref="LocalBinaryPath"/>,
-        /// <c>target/func/app</c> (<c>target\func\app.exe</c> on Windows), in <paramref name="workingDirectory"/>. Core Tools
-        /// points the host at that file, because the shipped native worker config names <c>bin/app</c>, which is the binary of the
-        /// package. Cargo has no stable option for the output path, which depends on the profile, the target, the
-        /// package name and whether the package belongs to a workspace, so the path comes from cargo itself.
+        /// <c>bin/app</c> (<c>bin\app.exe</c> on Windows), in <paramref name="workingDirectory"/>. That is the executable that the
+        /// shipped native worker config names, so the host needs no path of its own. Cargo has no stable option for the output
+        /// path, which depends on the profile, the target, the package name and whether the package belongs to a workspace,
+        /// so the path comes from cargo itself. The binary is a debug build until <c>func pack</c> builds a release binary into
+        /// <c>bin/app</c>, and <c>func pack --no-build</c> and <c>func publish --no-build</c> warn about a binary with debug information.
         /// </summary>
         public static async Task BuildProject(string workingDirectory = null)
         {
@@ -707,8 +702,8 @@ namespace Azure.Functions.Cli.Helpers
         }
 
         /// <summary>
-        /// Copies the built executable to <paramref name="destination"/>, which is <c>bin/app</c> for the package or
-        /// <c>target/func/app</c> for <c>func start</c>, through a
+        /// Copies the built executable to <paramref name="destination"/>, which is <c>bin/app</c> (<c>bin\app.exe</c> on Windows)
+        /// for <c>func start</c> and <c>bin/app</c> for the package, through a
         /// temporary file in the same folder that is then moved over the destination. A copy that fails half way, for example
         /// on a full disk, leaves the old binary or none, and never half of a binary, which <c>func pack --no-build</c> would
         /// pack because the header is valid. The move also puts a new file in place of the old one and does not rewrite it.

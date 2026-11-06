@@ -299,15 +299,10 @@ namespace Azure.Functions.Cli.Actions.HostActions
         {
             var runtime = GlobalCoreToolsSettings.CurrentWorkerRuntimeOrNone;
 
-            // The shipped native worker config names bin/app. A Rust app runs the debug binary that 'func start' builds in target/func, on every
-            // OS, because bin/app is the binary of the package and only 'func pack' writes it. Other native
-            // languages keep the shipped default, and get the executable name of Windows from Core Tools.
+            // The shipped native worker config names bin/app, and every native language runs the binary there. Windows needs the
+            // executable name from Core Tools.
             string defaultExecutablePath = null;
-            if (runtime == WorkerRuntime.Rust)
-            {
-                defaultExecutablePath = RustHelpers.LocalBinaryPath;
-            }
-            else if (OperatingSystem.IsWindows() && WorkerRuntimeLanguageHelper.IsNative(runtime))
+            if (OperatingSystem.IsWindows() && WorkerRuntimeLanguageHelper.IsNative(runtime))
             {
                 defaultExecutablePath = NativeWorkerHelpers.LocalBinaryPath;
             }
