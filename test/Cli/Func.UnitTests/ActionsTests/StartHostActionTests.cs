@@ -25,6 +25,7 @@ namespace Azure.Functions.Cli.UnitTests.ActionsTests
     {
         [Theory]
         [InlineData(WorkerRuntime.Go)]
+        [InlineData(WorkerRuntime.Rust)]
         [InlineData(WorkerRuntime.Python)]
         [InlineData(WorkerRuntime.Custom)]
         [InlineData(WorkerRuntime.None)]
@@ -49,10 +50,10 @@ namespace Azure.Functions.Cli.UnitTests.ActionsTests
             }
         }
 
-        // A Rust app runs the debug binary that 'func start' builds in target/func, on every OS. The shipped native worker config names
-        // bin/app, which only 'func pack' writes, so the host is pointed at the binary of 'func start' and not at that file.
+        // 'func start' builds the Rust worker into bin/app, the executable that the shipped native worker config names. The host runs it
+        // through that config, so Core Tools gives it no path of its own that is specific to Rust. Only Windows needs the executable name.
         [Fact]
-        public void AddNativeWorkerConfigurationDefaults_Rust_PointsTheHostAtTheBinaryOfFuncStartOnEveryOs()
+        public void AddNativeWorkerConfigurationDefaults_Rust_GivesTheHostNoRustSpecificPath()
         {
             var originalRuntime = GlobalCoreToolsSettings.CurrentWorkerRuntimeOrNone;
             try
@@ -63,8 +64,9 @@ namespace Azure.Functions.Cli.UnitTests.ActionsTests
                 StartHostAction.AddNativeWorkerConfigurationDefaults(builder);
 
                 var path = builder.Build()["languageWorkers:native:defaultExecutablePath"];
-                path.Should().Be(Path.Combine("target", "func", OperatingSystem.IsWindows() ? "app.exe" : "app"));
-                path.Should().Be(RustHelpers.LocalBinaryPath);
+                path.Should().Be(OperatingSystem.IsWindows() ? Path.Combine("bin", "app.exe") : null);
+                (path ?? string.Empty).Should().NotContain("target");
+                path.Should().NotBe(Path.Combine("target", "func", OperatingSystem.IsWindows() ? "app.exe" : "app"));
             }
             finally
             {

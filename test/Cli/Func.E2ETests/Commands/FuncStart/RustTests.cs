@@ -2,6 +2,7 @@
 // Licensed under the MIT License. See LICENSE in the project root for license information.
 
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using AwesomeAssertions;
 using Azure.Functions.Cli.E2ETests.Traits;
 using Azure.Functions.Cli.Helpers;
@@ -81,18 +82,16 @@ namespace Azure.Functions.Cli.E2ETests.Commands.FuncStart
             var result = command
                 .WithWorkingDirectory(WorkingDirectory)
                 .WithEnvironmentVariable(Common.Constants.FunctionsWorkerRuntime, "native")
-                .WithEnvironmentVariable(Common.Constants.FunctionsCliNativeLanguage, "rust")
                 .Execute(arguments);
 
             File.Exists(probeFile).Should().BeTrue("the host should have launched the worker");
             var recorded = File.ReadAllLines(probeFile);
             Path.GetFileName(recorded[0]).Should().Be(Path.GetFileName(WorkingDirectory), "the worker starts in the app folder");
 
-            // The host ran the binary that 'func start' keeps in target/func, and 'func start' wrote nothing in bin, which is where
-            // 'func pack' puts the package binary and 'func pack --no-build' looks for it.
+            // The host ran bin/app (bin\app.exe on Windows), the executable that the native worker config names.
             var executable = File.ReadAllText(Path.Combine(WorkingDirectory, "probe-exe.txt")).Replace('\\', '/');
-            executable.Should().EndWith(RustHelpers.LocalBinaryPath.Replace('\\', '/'), "the host runs the binary of 'func start'");
-            Directory.Exists(Path.Combine(WorkingDirectory, "bin")).Should().BeFalse("only 'func pack' writes in bin");
+            executable.Should().EndWith(OperatingSystem.IsWindows() ? "bin/app.exe" : "bin/app", "the host runs the binary that 'func start' built");
+            executable.Should().NotContain("/target/", "the host is not pointed at the build output of cargo");
 
             // The host gives a directly launched worker both spellings of its startup arguments.
             recorded.Should().Contain(["--host", "--port", "--workerId", "--requestId", "--functions-uri", "--functions-worker-id", "--functions-request-id"]);
@@ -145,21 +144,21 @@ namespace Azure.Functions.Cli.E2ETests.Commands.FuncStart
                 .WithWorkingDirectory(WorkingDirectory)
                 .WithEnvironmentVariable("PATH", pathWithoutCargo)
                 .WithEnvironmentVariable(Common.Constants.FunctionsWorkerRuntime, "native")
-                .WithEnvironmentVariable(Common.Constants.FunctionsCliNativeLanguage, "rust")
                 .Execute(["--port", port.ToString(), "--no-build"]);
 
             File.Exists(probeFile).Should().BeTrue("the host should have launched the worker although there is no cargo on the PATH");
             result.Should().NotHaveStdOutContaining("Building Rust worker binary");
         }
 
-        // The debug binary of 'func start' must never be packed by accident. On an x86_64 Linux machine it was: the start left it in
-        // bin/app, where it is a valid x86_64 ELF file, and 'func pack --no-build' took it for the binary of the package.
+        // The debug binary that 'func start' builds is the binary of the package. On an x86_64 Linux machine it is a valid x86_64 ELF file,
+        // so 'func pack --no-build' takes it for the binary of the package, packs it and warns that it has debug information. On Windows
+        // the binary of 'func start' is bin\app.exe, which 'func pack --no-build' never reads, so it finds no binary to pack.
         [SkippableFact]
-        public async Task Start_Rust_ThenPackNoBuild_FindsNoBinaryToPack()
+        public async Task Start_Rust_ThenPackNoBuild_PacksTheDebugBinaryOnLinuxAndWarns()
         {
             Skip.IfNot(CargoIsAvailable(), "Needs cargo to build the probe worker.");
 
-            var testName = nameof(Start_Rust_ThenPackNoBuild_FindsNoBinaryToPack);
+            var testName = nameof(Start_Rust_ThenPackNoBuild_PacksTheDebugBinaryOnLinuxAndWarns);
             await FuncInitWithRetryAsync(testName, [".", "--worker-runtime", "rust"]);
             File.WriteAllText(Path.Combine(WorkingDirectory, "Cargo.toml"), ProbeManifest);
             File.WriteAllText(Path.Combine(WorkingDirectory, "src", "main.rs"), ProbeSource);
@@ -185,19 +184,27 @@ namespace Azure.Functions.Cli.E2ETests.Commands.FuncStart
             start
                 .WithWorkingDirectory(WorkingDirectory)
                 .WithEnvironmentVariable(Common.Constants.FunctionsWorkerRuntime, "native")
-                .WithEnvironmentVariable(Common.Constants.FunctionsCliNativeLanguage, "rust")
                 .Execute(["--port", port.ToString()]);
 
             File.Exists(probeFile).Should().BeTrue("the start built the worker and the host launched it");
-            File.Exists(Path.Combine(WorkingDirectory, RustHelpers.LocalBinaryPath)).Should().BeTrue("the start left its binary in target/func");
+            File.Exists(Path.Combine(WorkingDirectory, RustHelpers.LocalBinaryPath)).Should().BeTrue("the start left its binary in bin");
 
             var pack = new FuncPackCommand(FuncPath, $"{testName}_pack", Log)
                 .WithWorkingDirectory(WorkingDirectory)
                 .Execute(["--no-build"]);
 
-            pack.Should().ExitWith(1);
-            pack.Should().HaveStdErrContaining("Could not find a built Rust binary");
-            Directory.GetFiles(WorkingDirectory, "*.zip").Should().BeEmpty("there was no binary of the package to pack");
+            if (OperatingSystem.IsWindows())
+            {
+                pack.Should().ExitWith(1);
+                pack.Should().HaveStdErrContaining("Could not find a built Rust binary");
+                Directory.GetFiles(WorkingDirectory, "*.zip").Should().BeEmpty("there was no binary of the package to pack");
+            }
+            else if (OperatingSystem.IsLinux() && RuntimeInformation.OSArchitecture == Architecture.X64)
+            {
+                pack.Should().ExitWith(0);
+                pack.Should().HaveStdOutContaining($"'{Path.Combine("bin", "app")}' has debug information");
+                Directory.GetFiles(WorkingDirectory, "*.zip").Should().ContainSingle();
+            }
         }
 
         [SkippableTheory]
@@ -244,12 +251,10 @@ namespace Azure.Functions.Cli.E2ETests.Commands.FuncStart
             var result = command
                 .WithWorkingDirectory(WorkingDirectory)
                 .WithEnvironmentVariable(Common.Constants.FunctionsWorkerRuntime, "native")
-                .WithEnvironmentVariable(Common.Constants.FunctionsCliNativeLanguage, "rust")
                 .Execute(arguments);
 
             response.Should().Be("hello world");
             File.Exists(binaryPath).Should().BeTrue();
-            Directory.Exists(Path.Combine(WorkingDirectory, "bin")).Should().BeFalse("only 'func pack' writes in bin");
             if (noBuild)
             {
                 result.Should().NotHaveStdOutContaining("Building Rust worker binary");

@@ -108,36 +108,27 @@ namespace Azure.Functions.Cli.UnitTests.HelperTests
             worker.Major.Should().BeGreaterThanOrEqualTo(1);
         }
 
-        // The debug binary that 'func start' builds must never be a file that 'func pack --no-build' or 'func publish --no-build'
-        // reads. bin/app is the binary of the package. 'func pack' writes it and the two commands read it. So the binary of 'func start'
-        // lives in a folder of its own under target/, where Rust developers expect build output and git ignores it.
+        // 'func start' builds the Rust worker into bin/app (bin\app.exe on Windows), the executable that the shipped native worker config
+        // names. The host runs it through that config, so there is no path that is specific to Rust.
         [Fact]
-        public void LocalBinaryPath_IsInTheFuncFolderUnderTarget()
+        public void LocalBinaryPath_IsTheBinaryThatTheNativeWorkerConfigNames()
         {
-            RustHelpers.LocalBinaryPath.Should().Be(Path.Combine("target", "func", OperatingSystem.IsWindows() ? "app.exe" : "app"));
+            RustHelpers.LocalBinaryPath.Should().Be(Path.Combine("bin", OperatingSystem.IsWindows() ? "app.exe" : "app"));
         }
 
         [Fact]
-        public void LocalBinaryPath_IsNeitherOfTheFilesThatPackReads()
+        public void LocalBinaryPath_HasNoFolderOfItsOwnUnderTarget()
         {
-            // 'func pack' reads bin/app. On Windows the binary of 'func start' used to be bin\app.exe, next to it.
-            RustHelpers.LocalBinaryPath.Should().NotBe(Path.Combine("bin", "app"));
-            RustHelpers.LocalBinaryPath.Should().NotBe(Path.Combine("bin", "app.exe"));
-            RustHelpers.LocalBinaryPath.Should().NotStartWith("bin" + Path.DirectorySeparatorChar);
-        }
-
-        // Go keeps the layout that the shipped native worker config names, on every runtime that shares it.
-        [Fact]
-        public void GoLocalBinaryPath_StaysTheSharedNativeLayout()
-        {
-            GoHelpers.LocalBinaryPath.Should().Be(Path.Combine("bin", OperatingSystem.IsWindows() ? "app.exe" : "app"));
+            RustHelpers.LocalBinaryPath.Should().NotContain("target");
+            RustHelpers.LocalBinaryPath.Should().StartWith("bin" + Path.DirectorySeparatorChar);
+            RustHelpers.LocalBinaryPath.Should().Be(NativeWorkerHelpers.LocalBinaryPath);
         }
 
         [Fact]
         public void AssertBinaryExists_BinaryPresent_DoesNotThrow()
         {
             var dir = Path.Combine(Path.GetTempPath(), "func-rust-test-" + Guid.NewGuid().ToString("N"));
-            var binary = Path.Combine(dir, RustHelpers.LocalBinaryPath);
+            var binary = Path.Combine(dir, "bin", OperatingSystem.IsWindows() ? "app.exe" : "app");
             Directory.CreateDirectory(Path.GetDirectoryName(binary));
             try
             {
@@ -166,7 +157,8 @@ namespace Azure.Functions.Cli.UnitTests.HelperTests
                     .Which.Message.Should().Contain("Could not find a built Rust binary")
                     .And.Contain("--no-build")
                     .And.Contain("cargo build")
-                    .And.Contain(Path.Combine("target", "func"), "the message names the folder that 'func start' runs the binary from");
+                    .And.Contain(Path.Combine("bin", OperatingSystem.IsWindows() ? "app.exe" : "app"), "the message names the binary that 'func start' runs")
+                    .And.NotContain("target");
             }
             finally
             {
@@ -174,19 +166,47 @@ namespace Azure.Functions.Cli.UnitTests.HelperTests
             }
         }
 
-        // bin/app is what 'func pack' writes, and it is a Linux binary for the package. 'func start' does not run it, so it is no
-        // binary to start with, and the message says that there is none.
+        // The build output of cargo is not the binary of the app. 'func start' runs bin/app, so a file that is only in target/ is no
+        // binary to start, and the message says that there is none.
         [Fact]
-        public void AssertBinaryExists_OnlyTheBinaryThatPackWrites_IsNoBinaryToStart()
+        public void AssertBinaryExists_OnlyTheBuildOutputOfCargo_IsNoBinaryToStart()
         {
             using var folder = new StartFolder(withBinary: false);
-            Directory.CreateDirectory(Path.Combine(folder.Path, "bin"));
-            File.WriteAllText(Path.Combine(folder.Path, "bin", "app"), "stub");
-            File.WriteAllText(Path.Combine(folder.Path, "bin", "app.exe"), "stub");
+            var debugFolder = Path.Combine(folder.Path, "target", "debug");
+            Directory.CreateDirectory(debugFolder);
+            File.WriteAllText(Path.Combine(debugFolder, "app"), "stub");
+            File.WriteAllText(Path.Combine(debugFolder, "app.exe"), "stub");
 
             var action = () => RustHelpers.AssertBinaryExists(folder.Path);
 
             action.Should().Throw<CliException>().Which.Message.Should().Contain("Could not find a built Rust binary");
+        }
+
+        // On Windows the host runs bin\app.exe, and the Linux binary that 'func pack' writes to bin/app is a different file.
+        [SkippableFact]
+        public void AssertBinaryExists_OnWindows_TheLinuxBinaryOfPackIsNoBinaryToStart()
+        {
+            Skip.IfNot(OperatingSystem.IsWindows(), "bin/app is the binary to start on the other systems");
+            using var folder = new StartFolder(withBinary: false);
+            Directory.CreateDirectory(Path.Combine(folder.Path, "bin"));
+            File.WriteAllText(Path.Combine(folder.Path, "bin", "app"), "stub");
+
+            var action = () => RustHelpers.AssertBinaryExists(folder.Path);
+
+            action.Should().Throw<CliException>().Which.Message.Should().Contain("Could not find a built Rust binary");
+        }
+
+        [SkippableFact]
+        public void AssertBinaryExists_OnLinuxAndMacOs_BinApp_IsTheBinaryToStart()
+        {
+            Skip.If(OperatingSystem.IsWindows(), "Windows runs bin\\app.exe");
+            using var folder = new StartFolder(withBinary: false);
+            Directory.CreateDirectory(Path.Combine(folder.Path, "bin"));
+            File.WriteAllText(Path.Combine(folder.Path, "bin", "app"), "stub");
+
+            var action = () => RustHelpers.AssertBinaryExists(folder.Path);
+
+            action.Should().NotThrow();
         }
 
         // A symbolic link that points nowhere still exists as a file. The user should hear that there is no binary,
@@ -229,6 +249,20 @@ namespace Azure.Functions.Cli.UnitTests.HelperTests
             await RustHelpers.PrepareForStart(noBuild: true, folder.Path, steps.GetCargoVersion, steps.Build);
 
             steps.Calls.Should().BeEmpty("a prebuilt binary runs without cargo");
+        }
+
+        [Fact]
+        public async Task PrepareForStart_NoBuild_TheBinaryInBin_NeedsNeitherTheToolchainNorABuild()
+        {
+            using var folder = new StartFolder(withBinary: false);
+            Directory.CreateDirectory(Path.Combine(folder.Path, "bin"));
+            File.WriteAllText(Path.Combine(folder.Path, "bin", OperatingSystem.IsWindows() ? "app.exe" : "app"), "stub");
+            var steps = new StartSteps(version: null);
+
+            Func<Task> act = () => RustHelpers.PrepareForStart(noBuild: true, folder.Path, steps.GetCargoVersion, steps.Build);
+
+            await act.Should().NotThrowAsync();
+            steps.Calls.Should().BeEmpty();
         }
 
         [Fact]
@@ -476,40 +510,29 @@ namespace Azure.Functions.Cli.UnitTests.HelperTests
         }
 
         [SkipIfCargoNonExistFact]
-        public async Task BuildProject_ValidProject_CopiesTheBinaryToItsOwnFolder()
+        public async Task BuildProject_ValidProject_PutsTheBinaryInBinApp()
         {
             using var project = new CargoProject("one-bin", "fn main() { println!(\"hello from one-bin\"); }\n");
 
             await RustHelpers.BuildProject(project.Path);
 
-            var binary = Path.Combine(project.Path, RustHelpers.LocalBinaryPath);
-            File.Exists(binary).Should().BeTrue("BuildProject should produce the worker binary in target/func");
+            var binary = Path.Combine(project.Path, "bin", OperatingSystem.IsWindows() ? "app.exe" : "app");
+            File.Exists(binary).Should().BeTrue("BuildProject should produce the worker binary in bin");
+            Directory.Exists(Path.Combine(project.Path, "target", "func")).Should().BeFalse("the binary has no folder of its own under target");
             (await RunAsync(binary)).Should().Be("hello from one-bin");
         }
 
-        // Nothing that 'func start' builds may be a file that 'func pack --no-build' or 'func publish --no-build' can pack.
+        // The build output of cargo stays in target, and bin holds only the copy that the host runs.
         [SkipIfCargoNonExistFact]
-        public async Task BuildProject_ValidProject_LeavesNothingInBinForPack()
+        public async Task BuildProject_ValidProject_LeavesTheBuildOutputOfCargoInTarget()
         {
             using var project = new CargoProject("one-bin", "fn main() {}\n");
 
             await RustHelpers.BuildProject(project.Path);
 
-            Directory.Exists(Path.Combine(project.Path, "bin")).Should().BeFalse("only 'func pack' writes in bin");
-            RustHelpers.GetPackFiles(project.Path).Where(File.Exists).Should().BeEmpty("no file of the package exists after 'func start' built");
-        }
-
-        // The accident that the separate folder prevents, as far as a unit test can show it. On an x86_64 Linux machine the debug binary of 'func start'
-        // is a valid x86_64 ELF file, so the check that 'func pack --no-build' makes accepted it as the binary of the package.
-        [SkipIfCargoNonExistFact]
-        public async Task BuildProject_ThenTheCheckOfPackNoBuild_FindsNoBinaryToPack()
-        {
-            using var project = new CargoProject("one-bin", "fn main() {}\n");
-            await RustHelpers.BuildProject(project.Path);
-
-            var action = () => RustHelpers.AssertLinuxAmd64Binary(project.Path);
-
-            action.Should().Throw<CliException>().Which.Message.Should().Contain("Could not find a built Rust binary");
+            Directory.EnumerateFileSystemEntries(Path.Combine(project.Path, "bin")).Should().ContainSingle()
+                .Which.Should().Be(Path.Combine(project.Path, RustHelpers.LocalBinaryPath));
+            Directory.Exists(Path.Combine(project.Path, "target", "debug")).Should().BeTrue();
         }
 
         [SkipIfCargoNonExistFact]
@@ -604,10 +627,10 @@ namespace Azure.Functions.Cli.UnitTests.HelperTests
 
                 await RustHelpers.BuildProject(appDir);
 
-                // Cargo's own output is in the target folder of the workspace root. Only the binary of 'func start' is in the folder of the
-                // package, in target/func, and it is found through the path that cargo printed.
+                // Cargo's own output is in the target folder of the workspace root. Only the copy that the host runs is in the folder of the
+                // package, in bin, and it is found through the path that cargo printed.
                 Directory.Exists(Path.Combine(appDir, "target", "debug")).Should().BeFalse("the workspace root holds the target folder of cargo");
-                (await RunAsync(Path.Combine(appDir, RustHelpers.LocalBinaryPath))).Should().Be("from a member");
+                (await RunAsync(Path.Combine(appDir, "bin", OperatingSystem.IsWindows() ? "app.exe" : "app"))).Should().Be("from a member");
             }
             finally
             {

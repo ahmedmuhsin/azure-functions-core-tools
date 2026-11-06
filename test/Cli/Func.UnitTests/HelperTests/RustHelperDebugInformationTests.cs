@@ -11,9 +11,9 @@ using Xunit;
 
 namespace Azure.Functions.Cli.UnitTests.HelperTests
 {
-    // A debug binary must never be packed by accident. 'func start' no longer writes bin/app, so the one way left is a binary
-    // that somebody copied there. A debug build has a .debug_info section and a normal release build has none, so
-    // 'func pack --no-build' and 'func publish --no-build' warn when the binary has that section. The check reads the names of
+    // A debug binary must never be packed by accident. 'func start' builds a debug binary into bin/app, the file that 'func pack --no-build'
+    // and 'func publish --no-build' read, so a debug build has to be noticed there. A debug build has a .debug_info section and a normal
+    // release build has none, so the two commands warn when the binary has that section. The check reads the names of
     // the sections of the ELF file and nothing else. The text '.debug_info' is also in the data of a release binary, because the
     // standard library holds it there, so a scan of the bytes would warn about every build.
     [Collection("NativeWorkerRuntimeTests")]
@@ -284,6 +284,23 @@ namespace Azure.Functions.Cli.UnitTests.HelperTests
             await RustHelpers.BuildProject(dir.Path);
 
             RustHelpers.HasDebugInformation(Path.Combine(dir.Path, RustHelpers.LocalBinaryPath)).Should().BeTrue("cargo build makes a debug build");
+        }
+
+        // After 'func start' built the app, the binary of the package is the debug binary. 'func pack --no-build' and
+        // 'func publish --no-build' accept it as a valid x86_64 ELF file, and they warn about its debug information.
+        [SkipIfNotLinuxX64CargoFact]
+        public async Task BuildProject_ThenPackNoBuildAndPublishNoBuild_AcceptTheBinaryAndWarn()
+        {
+            using var dir = new TempDirectory();
+            WriteCargoProject(dir.Path, "start-then-pack", string.Empty);
+            await RustHelpers.BuildProject(dir.Path);
+
+            RustHelpers.GetPackFiles(dir.Path).Should().Contain(dir.BinaryPath, "the binary of 'func start' is the file of the package");
+            var packOutput = Capture(() => RustHelpers.AssertLinuxAmd64Binary(dir.Path));
+            var publishOutput = await CaptureAsync(() => RustHelpers.PrepareForPublish(dir.Path, noBuild: true));
+
+            packOutput.Should().Contain($"Warning: '{Path.Combine("bin", "app")}' has debug information");
+            publishOutput.Should().Contain($"Warning: '{Path.Combine("bin", "app")}' has debug information");
         }
 
         [SkipIfNotLinuxX64CargoFact]

@@ -2,12 +2,14 @@
 // Licensed under the MIT License. See LICENSE in the project root for license information.
 
 using System.IO.Abstractions;
+using System.Text;
 using AwesomeAssertions;
 using Azure.Functions.Cli.Actions.LocalActions;
 using Azure.Functions.Cli.Common;
 using Azure.Functions.Cli.ConfigurationProfiles;
 using Azure.Functions.Cli.Helpers;
 using Azure.Functions.Cli.Interfaces;
+using Colors.Net;
 using Newtonsoft.Json.Linq;
 using NSubstitute;
 using Xunit;
@@ -69,6 +71,27 @@ namespace Azure.Functions.Cli.UnitTests.ActionsTests
                 {
                     Environment.SetEnvironmentVariable(pair.Key, pair.Value);
                 }
+            }
+        }
+
+        // Runs the body with a console that records what it writes, and restores the previous console.
+        private static T WithConsole<T>(StringBuilder output, Func<T> body)
+        {
+            var console = Substitute.For<IConsoleWriter>();
+            console.WriteLine(Arg.Do<object>(o => output.AppendLine(o?.ToString()))).Returns(console);
+            console.Write(Arg.Do<object>(o => output.Append(o?.ToString()))).Returns(console);
+            var oldOut = ColoredConsole.Out;
+            var oldErr = ColoredConsole.Error;
+            try
+            {
+                ColoredConsole.Out = console;
+                ColoredConsole.Error = console;
+                return body();
+            }
+            finally
+            {
+                ColoredConsole.Out = oldOut;
+                ColoredConsole.Error = oldErr;
             }
         }
 
@@ -167,8 +190,77 @@ namespace Azure.Functions.Cli.UnitTests.ActionsTests
             resolved.Should().Be(WorkerRuntime.Go);
         }
 
+        // FUNCTIONS_WORKER_RUNTIME=native and a Cargo.toml are all that a Rust app needs. The verbose line that says how the
+        // runtime was found must not point to a setting that is not needed.
         [Fact]
-        public void GetCurrentWorkerRuntimeLanguage_NativeWithoutAnyMarker_ThrowsNamingBothMarkersAndBothValues()
+        public void GetCurrentWorkerRuntimeLanguage_NativeWithCargoToml_Verbose_FindsRustFromTheFileAndAsksForNoSetting()
+        {
+            var secretsManager = SecretsWith((Constants.FunctionsWorkerRuntime, "native"));
+            var fileSystem = FileSystemWithFiles("Cargo.toml");
+            var previousRuntime = GlobalCoreToolsSettings.CurrentWorkerRuntimeOrNone;
+            var output = new StringBuilder();
+            WorkerRuntime resolved;
+            try
+            {
+                GlobalCoreToolsSettings.Init(secretsManager: null, args: new[] { "--verbose", "--rust" });
+                resolved = WithConsole(
+                    output,
+                    () => WithEnvironment(
+                        new Dictionary<string, string>
+                        {
+                            [Constants.FunctionsWorkerRuntime] = null,
+                            [Constants.FunctionsCliNativeLanguage] = null,
+                        },
+                        () =>
+                        {
+                            using (FileSystemHelpers.Override(fileSystem))
+                            {
+                                return WorkerRuntimeLanguageHelper.GetCurrentWorkerRuntimeLanguage(secretsManager);
+                            }
+                        }));
+            }
+            finally
+            {
+                GlobalCoreToolsSettings.Init(secretsManager: null, args: new[] { "--rust" });
+                GlobalCoreToolsSettings.CurrentWorkerRuntime = previousRuntime;
+            }
+
+            resolved.Should().Be(WorkerRuntime.Rust);
+            output.ToString().Should().Contain("Resolving native worker runtime to 'rust'").And.Contain("Cargo.toml found");
+            output.ToString().Should().NotContain(Constants.FunctionsCliNativeLanguage);
+        }
+
+        // The setting stays as an override for a project that sets it by hand. A folder that holds both go.mod and Cargo.toml
+        // resolves to the first of them, and the setting is what says that the app is the other one.
+        [Theory]
+        [InlineData("environment")]
+        [InlineData("settings")]
+        public void GetCurrentWorkerRuntimeLanguage_NativeWithGoModAndCargoToml_TheSettingStillSelectsRust(string source)
+        {
+            var secretsManager = source == "settings"
+                ? SecretsWith((Constants.FunctionsWorkerRuntime, "native"), (Constants.FunctionsCliNativeLanguage, "rust"))
+                : SecretsWith((Constants.FunctionsWorkerRuntime, "native"));
+            var fileSystem = FileSystemWithFiles("go.mod", "Cargo.toml");
+
+            var resolved = WithEnvironment(
+                new Dictionary<string, string>
+                {
+                    [Constants.FunctionsWorkerRuntime] = null,
+                    [Constants.FunctionsCliNativeLanguage] = source == "environment" ? "rust" : null,
+                },
+                () =>
+                {
+                    using (FileSystemHelpers.Override(fileSystem))
+                    {
+                        return WorkerRuntimeLanguageHelper.GetCurrentWorkerRuntimeLanguage(secretsManager);
+                    }
+                });
+
+            resolved.Should().Be(WorkerRuntime.Rust);
+        }
+
+        [Fact]
+        public void GetCurrentWorkerRuntimeLanguage_NativeWithoutAnyMarker_ThrowsNamingBothMarkersAndNoSetting()
         {
             var secretsManager = SecretsWith((Constants.FunctionsWorkerRuntime, "native"));
             var fileSystem = FileSystemWithFiles();
@@ -191,7 +283,8 @@ namespace Azure.Functions.Cli.UnitTests.ActionsTests
                 .Which.Message.Should().Contain("native")
                 .And.Contain("go.mod")
                 .And.Contain("Cargo.toml")
-                .And.Contain($"{Constants.FunctionsCliNativeLanguage}=rust");
+                .And.Contain("func init")
+                .And.NotContain(Constants.FunctionsCliNativeLanguage, "the language comes from the files of the project");
         }
 
         [Theory]
@@ -331,11 +424,13 @@ namespace Azure.Functions.Cli.UnitTests.ActionsTests
             File.Exists(Path.Combine(project.Path, "Dockerfile")).Should().BeFalse();
             File.Exists(Path.Combine(project.Path, "go.mod")).Should().BeFalse();
 
-            // The explicit selector is written so later commands do not have to scan for Cargo.toml.
+            // The scaffold names no language. FUNCTIONS_WORKER_RUNTIME=native and the Cargo.toml are what identify the app.
             var settings = JObject.Parse(File.ReadAllText(Path.Combine(project.Path, "local.settings.json")));
             var values = (JObject)settings["Values"];
             values[Constants.FunctionsWorkerRuntime].Value<string>().Should().Be("native");
-            values[Constants.FunctionsCliNativeLanguage].Value<string>().Should().Be("rust");
+            values.ContainsKey(Constants.FunctionsCliNativeLanguage).Should().BeFalse();
+            values.Properties().Select(p => p.Name).Should().NotContain(Constants.FunctionsCliNativeLanguage);
+            File.ReadAllText(Path.Combine(project.Path, "local.settings.json")).Should().NotContain("NATIVE_LANGUAGE");
             values[Constants.AzureWebJobsStorage].Value<string>().Should().BeEmpty();
 
             File.ReadAllText(Path.Combine(project.Path, "host.json")).Should().Contain("extensionBundle");
@@ -347,6 +442,31 @@ namespace Azure.Functions.Cli.UnitTests.ActionsTests
             gitIgnoreLines.Should().Contain("target/");
             gitIgnoreLines.Should().Contain("!src/bin/");
             gitIgnoreLines.LastIndexOf("!src/bin/").Should().BeGreaterThan(gitIgnoreLines.LastIndexOf("**/bin/"), "the last matching rule wins in a .gitignore");
+        }
+
+        // The scaffold holds only FUNCTIONS_WORKER_RUNTIME=native, and the Cargo.toml next to it is enough to find the Rust app.
+        [Fact]
+        public async Task RunAsync_WithRustWorkerRuntime_TheScaffoldIsFoundAsRustFromItsOwnFiles()
+        {
+            using var project = new TempProjectDirectory();
+            var action = CreateAction();
+            action.ParseArgs(new[] { "--worker-runtime", "rust" });
+
+            await action.RunAsync();
+
+            var settings = JObject.Parse(File.ReadAllText(Path.Combine(project.Path, "local.settings.json")));
+            var values = (JObject)settings["Values"];
+            var secretsManager = SecretsWith(values.Properties().Select(p => (p.Name, p.Value.Value<string>())).ToArray());
+
+            var resolved = WithEnvironment(
+                new Dictionary<string, string>
+                {
+                    [Constants.FunctionsWorkerRuntime] = null,
+                    [Constants.FunctionsCliNativeLanguage] = null,
+                },
+                () => WorkerRuntimeLanguageHelper.GetCurrentWorkerRuntimeLanguage(secretsManager));
+
+            resolved.Should().Be(WorkerRuntime.Rust);
         }
 
         [Fact]

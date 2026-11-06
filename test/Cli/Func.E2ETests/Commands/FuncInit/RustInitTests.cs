@@ -21,7 +21,7 @@ namespace Azure.Functions.Cli.E2ETests.Commands.FuncInit
             var testName = nameof(Init_WithRust_GeneratesExpectedFunctionProjectFiles);
             var funcInitCommand = new FuncInitCommand(FuncPath, testName, Log ?? throw new ArgumentNullException(nameof(Log)));
             var localSettingsPath = Path.Combine(workingDir, Common.Constants.LocalSettingsJsonFileName);
-            var expectedLocalSettingsContent = new[] { Common.Constants.FunctionsWorkerRuntime, "native", Common.Constants.FunctionsCliNativeLanguage, "rust" };
+            var expectedLocalSettingsContent = new[] { Common.Constants.FunctionsWorkerRuntime, "native" };
             var hostJsonPath = Path.Combine(workingDir, "host.json");
             var expectedHostJsonContent = new[] { "extensionBundle" };
             var cargoTomlPath = Path.Combine(workingDir, "Cargo.toml");
@@ -49,6 +49,7 @@ namespace Azure.Functions.Cli.E2ETests.Commands.FuncInit
             funcInitResult.Should().FilesExistsWithExpectContent(filesToValidate);
             File.Exists(funcIgnorePath).Should().BeTrue("Expected .funcignore to exist");
             File.Exists(Path.Combine(workingDir, "go.mod")).Should().BeFalse("Rust init must not write Go files");
+            File.ReadAllText(localSettingsPath).Should().NotContain(Common.Constants.FunctionsCliNativeLanguage, "the language comes from Cargo.toml");
             funcInitResult.Should().HaveStdOutContaining(Utilities.RustPreviewWarning);
         }
 
@@ -65,7 +66,9 @@ namespace Azure.Functions.Cli.E2ETests.Commands.FuncInit
 
             funcInitResult.Should().ExitWith(0);
             File.Exists(Path.Combine(workingDir, "Cargo.toml")).Should().BeTrue("Expected Cargo.toml to exist");
-            File.ReadAllText(Path.Combine(workingDir, Common.Constants.LocalSettingsJsonFileName)).Should().Contain("\"rust\"");
+            var localSettings = File.ReadAllText(Path.Combine(workingDir, Common.Constants.LocalSettingsJsonFileName));
+            localSettings.Should().Contain("\"native\"");
+            localSettings.Should().NotContain(Common.Constants.FunctionsCliNativeLanguage);
         }
 
         [Fact]
@@ -127,7 +130,7 @@ namespace Azure.Functions.Cli.E2ETests.Commands.FuncInit
             await FuncInitWithRetryAsync(nameof(Init_WithRust_GitIgnoreTracksCargoBinFolderAndIgnoresBuildOutput), [".", "--worker-runtime", "rust"]);
             (await GitAsync(workingDir, "init -q")).Should().Be(0);
 
-            foreach (var file in new[] { "src/bin/second.rs", "bin/app", "target/debug/app", "target/func/app" })
+            foreach (var file in new[] { "src/bin/second.rs", "bin/app", "target/debug/app" })
             {
                 var path = Path.Combine(workingDir, file);
                 Directory.CreateDirectory(Path.GetDirectoryName(path)!);
@@ -146,7 +149,6 @@ namespace Azure.Functions.Cli.E2ETests.Commands.FuncInit
                 ["Cargo.toml"] = false,
                 ["bin/app"] = true,
                 ["target/debug/app"] = true,
-                ["target/func/app"] = true,
             };
 
             foreach (var (path, ignored) in expectedIgnored)

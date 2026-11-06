@@ -133,16 +133,15 @@ namespace Azure.Functions.Cli.E2ETests.Commands.FuncPack
             result.Should().NotHaveStdOutContaining("debug information");
         }
 
-        // The accident that is still possible after func start moved: a debug build that somebody copies to bin/app by hand.
+        // 'func start' builds a debug binary into bin/app, the file that 'func pack --no-build' reads. The two warn and still pack it.
         [SkippableFact]
-        public async Task Pack_Rust_NoBuild_ADebugBuildCopiedByHand_WarnsAndStillPacks()
+        public async Task Pack_Rust_NoBuild_AfterTheBuildOfFuncStart_WarnsAndStillPacks()
         {
             Skip.IfNot(IsLinuxX64, LinuxBuildSkipReason);
-            var testName = nameof(Pack_Rust_NoBuild_ADebugBuildCopiedByHand_WarnsAndStillPacks);
+            var testName = nameof(Pack_Rust_NoBuild_AfterTheBuildOfFuncStart_WarnsAndStillPacks);
             await InitRustAppAsync(testName);
             await RustHelpers.BuildProject(WorkingDirectory);
-            Directory.CreateDirectory(Path.Combine(WorkingDirectory, "bin"));
-            File.Copy(Path.Combine(WorkingDirectory, RustHelpers.LocalBinaryPath), Path.Combine(WorkingDirectory, "bin", "app"));
+            File.Exists(Path.Combine(WorkingDirectory, "bin", "app")).Should().BeTrue("the build of 'func start' writes bin/app");
 
             var result = new FuncPackCommand(FuncPath, testName, Log)
                 .WithWorkingDirectory(WorkingDirectory)
@@ -153,6 +152,26 @@ namespace Azure.Functions.Cli.E2ETests.Commands.FuncPack
 
             using var archive = ZipFile.OpenRead(SingleZip());
             archive.Entries.Select(e => e.FullName).OrderBy(n => n).Should().Equal("app", "host.json");
+        }
+
+        // 'func pack' without the flag builds a release binary and writes it to bin/app, over the debug binary of 'func start'.
+        [SkippableFact]
+        public async Task Pack_Rust_AfterTheBuildOfFuncStart_ReplacesTheDebugBinaryWithAReleaseBuild()
+        {
+            Skip.IfNot(IsLinuxX64, LinuxBuildSkipReason);
+            var testName = nameof(Pack_Rust_AfterTheBuildOfFuncStart_ReplacesTheDebugBinaryWithAReleaseBuild);
+            await InitRustAppAsync(testName);
+            await RustHelpers.BuildProject(WorkingDirectory);
+            var binary = Path.Combine(WorkingDirectory, "bin", "app");
+            RustHelpers.HasDebugInformation(binary).Should().BeTrue("the build of 'func start' is a debug build");
+
+            var result = new FuncPackCommand(FuncPath, testName, Log)
+                .WithWorkingDirectory(WorkingDirectory)
+                .Execute([]);
+
+            result.Should().ExitWith(0);
+            result.Should().NotHaveStdOutContaining("debug information");
+            RustHelpers.HasDebugInformation(binary).Should().BeFalse("the release build replaced the debug binary");
         }
 
         [Fact]

@@ -245,16 +245,16 @@ namespace Azure.Functions.Cli.UnitTests.HelperTests
             RustHelpers.GetPackFiles(dir.Path).Should().NotContain(file => file.EndsWith(".exe", StringComparison.OrdinalIgnoreCase));
         }
 
-        // The package holds host.json and bin/app, and nothing else, so the binary that 'func start' runs is never in it.
+        // The package holds host.json and bin/app, and nothing else. The binary that 'func start' builds is bin/app, so on the systems
+        // where that is its name it is the file of the package. On Windows it is bin\app.exe, which never goes into the package.
         [Fact]
-        public void GetPackFiles_NeverIncludesTheBinaryThatFuncStartRuns()
+        public void GetPackFiles_HoldsTheBinaryThatFuncStartBuildsOnlyWhereItIsNamedBinApp()
         {
             using var dir = new TempDirectory();
             var startBinary = Path.Combine(dir.Path, RustHelpers.LocalBinaryPath);
-            Directory.CreateDirectory(Path.GetDirectoryName(startBinary));
-            File.WriteAllText(startBinary, "x");
 
-            RustHelpers.GetPackFiles(dir.Path).Should().NotContain(startBinary);
+            RustHelpers.GetPackFiles(dir.Path).Contains(startBinary).Should().Be(!OperatingSystem.IsWindows());
+            RustHelpers.GetPackFiles(dir.Path).Should().Contain(Path.Combine(dir.Path, "bin", "app"));
         }
 
         // The cargo output below is real, captured from cargo 1.90.0 on x86_64 Linux. The missing
